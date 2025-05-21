@@ -15,7 +15,7 @@ Follow these steps to set up and run Classidyne on your local machine.
 
 1. **Clone the repository:**
     ```sh
-    git clone https://github.com/Halcy0nic/Classidyne.git
+    git clone https://github.com/skinnyrad/Classidyne.git
     ```
 
 2. **Navigate to the project directory:**
@@ -35,7 +35,7 @@ Follow these steps to set up and run Classidyne on your local machine.
         ```
     - On Windows:
         ```sh
-        .\venv-classidyne\Scripts\activate
+        .\venv-classidyne\Scripts\Activate.ps1
         ```
 
 5. **Install the required dependencies:**
@@ -51,7 +51,7 @@ This dataset contains images of radio frequency (RF) signals captured as waterfa
 
 ```
 datasets/
-  └── waterfall
+  └── waterfall (or FFT)
      └── signal_class/
         └── image
 ```
@@ -60,13 +60,11 @@ For example:
 
 ```
 datasets/
-  └── waterfall
+  └── waterfall (or FFT)
       └── bluetooth/
           └── c17afe0fe5cc3cc1308605cf390ecbb5.png
 ```
 
-
-You can copy and paste this directly into your README.
 
 7. **Run the project:**
     ```sh
