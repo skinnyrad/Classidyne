@@ -43,7 +43,32 @@ Follow these steps to set up and run Classidyne on your local machine.
     pip install -r requirements.txt
     ```
 
-6. **Run the project:**
+6. Downloading the Dataset
+
+To use this project, you will need the Radio Frequency (RF) Signal Image Classification dataset, which is available on [Kaggle: RF Signal Image Classification Dataset](https://www.kaggle.com/datasets/halcy0nic/radio-frequecy-rf-signal-image-classification). Download the dataset from Kaggle and unzip it into your project directory. The dataset already has the correct folder structure, so no additional organization is required. Once unzipped, you will be able to embed the images using the provided tools in this repository.
+
+This dataset contains images of radio frequency (RF) signals captured as waterfall plots using a spectrum analyzer. The dataset is organized as follows:
+
+```
+datasets/
+  └── waterfall
+     └── signal_class/
+        └── image
+```
+
+For example:
+
+```
+datasets/
+  └── waterfall
+      └── bluetooth/
+          └── c17afe0fe5cc3cc1308605cf390ecbb5.png
+```
+
+
+You can copy and paste this directly into your README.
+
+7. **Run the project:**
     ```sh
     streamlit run classidyne.py
     ```
