@@ -92,9 +92,9 @@ datasets/
 ```
 
 7. **Run the project:**
-   ```sh
-   streamlit run classidyne.py
-   ```
+```sh
+streamlit run classidyne.py
+```
 
 ## Usage
 
