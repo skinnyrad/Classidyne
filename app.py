@@ -14,7 +14,8 @@ import io
 import base64
 
 from torchvision import transforms as tv_transforms
-from fastapi import FastAPI, UploadFile, BackgroundTasks
+from fastapi import FastAPI, UploadFile, BackgroundTasks, Form
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import json
 import torch
@@ -239,14 +240,28 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# CONFIGure CORS for future React frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # For development; restrict in production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # ----------------- API Endpoints -----------------
 
 @app.post("/api/classify", summary="Classify an uploaded image", response_description="Classification results and collage image")
-def classify(query_image: UploadFile, collection: str, similarity_threshold: float):
+def classify(
+    query_image: UploadFile = Form(..., description="Image file to classify"),
+    collection: str = Form(..., description="Collection to search in (waterfall or fft)"),
+    similarity_threshold: float = Form(0.5, description="Minimum similarity score to consider a match")
+    ):
     try:
+        image = Image.open(query_image.file).convert("L").convert("RGB")
         results = CLIENT.search(
             collection,
-            data=[EXTRACTOR(query_image)],
+            data=[EXTRACTOR(image)],
             output_fields=["filepath", "filehash", "class"],
             params={"metric_type": "COSINE"},
             limit=20
@@ -291,6 +306,8 @@ def classify(query_image: UploadFile, collection: str, similarity_threshold: flo
         else:
             concatenated_image = None  # No images met threshold
 
+        # Sort class_scores by descending confidence
+        class_scores = sorted(class_scores, key=lambda x: x["confidence"], reverse=True)
         return JSONResponse({
             "success": True,
             "message": f"Found {total_count} images with similarity score above {similarity_threshold:.2f}.",

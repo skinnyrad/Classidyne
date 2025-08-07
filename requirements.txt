@@ -4,3 +4,6 @@ scikit_learn
 streamlit==1.41.1 # Last Version that handles CUDA well
 timm
 torch
+fastapi
+uvicorn
+python-multipart
