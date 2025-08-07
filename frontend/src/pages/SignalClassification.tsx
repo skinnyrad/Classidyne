@@ -10,7 +10,6 @@ import {
   LinearProgress,
   Grid,
   Card,
-  CardContent,
   CardMedia,
   Stack,
   Alert,
@@ -61,8 +60,8 @@ const SignalClassification: React.FC = () => {
         setClassScores(data.class_scores || []);
         setCollage(data.collage_image || null);
       })
-      .catch(() => {
-        setError("Failed to classify image.");
+      .catch((error) => {
+        setError("Failed to classify image: " + error.message);
       })
       .finally(() => {
         setLoading(false);
