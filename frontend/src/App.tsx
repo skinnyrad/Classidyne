@@ -10,6 +10,10 @@ import DeleteImage from "./pages/DeleteImage";
 import SearchImage from "./pages/SearchImage";
 import TypeViewer from "./pages/TypeViewer";
 
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+
+const queryClient = new QueryClient();
+
 const darkTheme = createTheme({
   palette: {
     mode: "dark",
@@ -20,23 +24,28 @@ const darkTheme = createTheme({
 });
 
 const App: React.FC = () => (
-  <ThemeProvider theme={darkTheme}>
-    <CssBaseline />
-    <Router>
-      <Navbar />
-      <Routes>
-        <Route
-          path="/signal-classification"
-          element={<SignalClassification />}
-        />
-        <Route path="/upload-signal-images" element={<UploadSignalImages />} />
-        <Route path="/delete-image" element={<DeleteImage />} />
-        <Route path="/search-image" element={<SearchImage />} />
-        <Route path="/type-viewer" element={<TypeViewer />} />
-        <Route path="*" element={<SignalClassification />} />
-      </Routes>
-    </Router>
-  </ThemeProvider>
+  <QueryClientProvider client={queryClient}>
+    <ThemeProvider theme={darkTheme}>
+      <CssBaseline />
+      <Router>
+        <Navbar />
+        <Routes>
+          <Route
+            path="/signal-classification"
+            element={<SignalClassification />}
+          />
+          <Route
+            path="/upload-signal-images"
+            element={<UploadSignalImages />}
+          />
+          <Route path="/delete-image" element={<DeleteImage />} />
+          <Route path="/search-image" element={<SearchImage />} />
+          <Route path="/type-viewer" element={<TypeViewer />} />
+          <Route path="*" element={<SignalClassification />} />
+        </Routes>
+      </Router>
+    </ThemeProvider>
+  </QueryClientProvider>
 );
 
 export default App;

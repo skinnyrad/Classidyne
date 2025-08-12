@@ -1,5 +1,7 @@
 import React, { useState } from "react";
+import { useMutation } from "@tanstack/react-query";
 import {
+  Dialog,
   Container,
   Typography,
   Box,
@@ -16,57 +18,55 @@ import {
   Paper,
 } from "@mui/material";
 import UploadFileIcon from "@mui/icons-material/UploadFile";
-import { useEffect } from "react";
 
 type Collection = "fft" | "waterfall";
-
 type ClassScore = {
   class: string;
   confidence: number;
   frequency_range: string;
 };
 
+const classifyImage = async ({
+  file,
+  collection,
+  threshold,
+}: {
+  file: File;
+  collection: Collection;
+  threshold: number;
+}) => {
+  const formData = new FormData();
+  formData.append("query_image", file);
+  formData.append("collection", collection);
+  formData.append("similarity_threshold", threshold.toString());
+
+  const res = await fetch("http://localhost:8000/api/classify", {
+    method: "POST",
+    body: formData,
+  });
+  if (!res.ok) throw new Error("Error from server.");
+  return res.json();
+};
+
 const SignalClassification: React.FC = () => {
   const [collection, setCollection] = useState<Collection>("waterfall");
   const [threshold, setThreshold] = useState<number>(0.6);
   const [file, setFile] = useState<File | null>(null);
-  const [fileUrl, setFileUrl] = useState<string | null>(null); // For preview
-  const [classScores, setClassScores] = useState<ClassScore[]>([]);
-  const [collage, setCollage] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [fileUrl, setFileUrl] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!file) return;
-    setError(null);
-    setClassScores([]);
-    setCollage(null);
-    setLoading(true);
+  // React Query mutation for classification
+  const { mutate, data, error, isPending, reset } = useMutation({
+    mutationFn: classifyImage,
+  });
 
-    const formData = new FormData();
-    formData.append("query_image", file);
-    formData.append("collection", collection);
-    formData.append("similarity_threshold", threshold.toString());
-
-    fetch("http://localhost:8000/api/classify", {
-      method: "POST",
-      body: formData,
-    })
-      .then((res) => {
-        if (!res.ok) throw new Error("Error from server.");
-        return res.json();
-      })
-      .then((data) => {
-        setClassScores(data.class_scores || []);
-        setCollage(data.collage_image || null);
-      })
-      .catch((error) => {
-        setError("Failed to classify image: " + error.message);
-      })
-      .finally(() => {
-        setLoading(false);
-      });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  // Auto-trigger mutation whenever file, collection, threshold change
+  React.useEffect(() => {
+    if (!file) {
+      reset();
+      return;
+    }
+    mutate({ file, collection, threshold });
+    // eslint-disable-next-line
   }, [file, collection, threshold]);
 
   const handleCollection = (
@@ -88,6 +88,9 @@ const SignalClassification: React.FC = () => {
       <Typography variant="h4" gutterBottom>
         Signal Classification
       </Typography>
+
+      {/* Controls for upload, collection, threshold, live */}
+
       <Paper elevation={3} sx={{ p: 3, mb: 2 }}>
         <Grid container spacing={2}>
           <Grid size={6}>
@@ -106,7 +109,7 @@ const SignalClassification: React.FC = () => {
                   onChange={handleFileChange}
                 />
               </Button>
-              <Stack direction={"row"} spacing={2} alignItems="center">
+              <Stack direction="row" spacing={2} alignItems="center">
                 <ToggleButtonGroup
                   color="primary"
                   value={collection}
@@ -136,7 +139,6 @@ const SignalClassification: React.FC = () => {
             </Stack>
           </Grid>
           <Grid size={6}>
-            {/* Display file preview if file is selected */}
             {fileUrl && (
               <Box sx={{ display: "flex", justifyContent: "center" }}>
                 <Card>
@@ -151,24 +153,26 @@ const SignalClassification: React.FC = () => {
           </Grid>
         </Grid>
       </Paper>
-      {loading && <LinearProgress />}
-      {error && <Alert severity="error">{error}</Alert>}
-      {!!classScores.length && (
+
+      {/* Display results */}
+
+      {isPending && <LinearProgress />}
+      {error && <Alert severity="error">{String(error)}</Alert>}
+      {!!data?.class_scores?.length && (
         <Box mb={2}>
           <Typography variant="h6" gutterBottom>
             Class Scores
           </Typography>
           <Stack spacing={2}>
-            {classScores.map((score) => (
+            {data.class_scores.map((score: ClassScore) => (
               <Paper key={score.class} sx={{ p: 2 }}>
-                <Stack direction={"row"} spacing={2} alignItems="center">
+                <Stack direction="row" spacing={2} alignItems="center">
                   <Typography variant="h4" sx={{ width: "10%" }}>
                     {score.confidence.toFixed(0)}%
                   </Typography>
                   <Typography variant="h6" sx={{ width: "15%" }}>
                     <b>{score.class.toUpperCase()}</b>
                   </Typography>
-
                   <Typography sx={{ maxWidth: "60%" }}>
                     Frequency range: {score.frequency_range}
                   </Typography>
@@ -178,7 +182,7 @@ const SignalClassification: React.FC = () => {
           </Stack>
         </Box>
       )}
-      {collage && (
+      {data?.collage_image && (
         <Box mb={3}>
           <Typography variant="h6" gutterBottom>
             Simmilar Signals
@@ -186,7 +190,7 @@ const SignalClassification: React.FC = () => {
           <Card>
             <CardMedia
               component="img"
-              src={`data:image/png;base64,${collage}`}
+              src={`data:image/png;base64,${data.collage_image}`}
               alt="Collage"
             />
           </Card>
