@@ -6,7 +6,6 @@ import {
   List,
   ListItem,
   ListItemText,
-  Box,
   Grid,
   Button,
   Snackbar,
@@ -16,56 +15,46 @@ import {
   DialogContent,
   DialogActions,
   IconButton,
-  LinearProgress,
   Stack,
 } from "@mui/material";
 import HelpOutlineIcon from "@mui/icons-material/HelpOutline";
 import CloseIcon from "@mui/icons-material/Close";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 const UploadSignalImages: React.FC = () => {
-  const [stats, setStats] = useState<{
-    embedding_status: string;
-    waterfall_size: number;
-    fft_size: number;
-  } | null>(null);
-  const [fetching, setFetching] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [helpOpen, setHelpOpen] = useState(false);
   const [snackbar, setSnackbar] = useState<string | null>(null);
   const [embeddingLoading, setEmbeddingLoading] = useState(false);
+  const queryClient = useQueryClient();
 
   const fetchStats = async () => {
-    setFetching(true);
-    setError(null);
-    try {
-      const res = await fetch("http://localhost:8000/api/stats");
-      const data = await res.json();
-      if (data.success) {
-        setStats({
-          embedding_status: data.embedding_status,
-          waterfall_size: data.waterfall_size,
-          fft_size: data.fft_size,
-        });
-      } else {
-        setError(data.message ?? "Failed to fetch stats.");
-      }
-    } catch (e: any) {
-      setError(e.message ?? "Failed to fetch stats.");
-    } finally {
-      setFetching(false);
-    }
+    const res = await fetch("http://localhost:8000/api/stats");
+    const data = await res.json();
+    if (!data.success)
+      throw new Error(data.message ?? "Failed to fetch stats.");
+    return {
+      embedding_status: data.embedding_status,
+      waterfall_size: data.waterfall_size,
+      fft_size: data.fft_size,
+    };
   };
 
-  useEffect(() => {
-    fetchStats();
-    // Optionally: refresh stats every 5s while embedding is running
-    const interval = setInterval(() => {
-      if (stats?.embedding_status === "Running") fetchStats();
-    }, 5000);
-    return () => clearInterval(interval);
-    // eslint-disable-next-line
-  }, [stats?.embedding_status]);
+  // React Query data fetching
+  const {
+    data: stats,
+    error,
+    isFetching,
+    refetch,
+  } = useQuery({
+    queryKey: ["stats"],
+    queryFn: fetchStats,
+    refetchInterval: 3000, // Every 3 seconds
+    refetchOnWindowFocus: "always", // Always refetch when window gains focus
+    refetchOnMount: "always", // Always refetch on mount
+    retry: false, // Don't retry automatically on error (you can change this)
+  });
 
+  // Start embedding handler
   const startEmbedding = async () => {
     setEmbeddingLoading(true);
     try {
@@ -78,7 +67,7 @@ const UploadSignalImages: React.FC = () => {
           ? "Embedding process started!"
           : data.message || "Failed to start embedding."
       );
-      fetchStats();
+      refetch(); // refetch stats right after starting
     } catch (e: any) {
       setSnackbar(e.message ?? "Failed to start embedding.");
     } finally {
@@ -230,11 +219,11 @@ const UploadSignalImages: React.FC = () => {
       </Dialog>
 
       {/* Main Panel */}
+      {/* Main Panel */}
       <Paper elevation={3} sx={{ p: 4 }}>
-        {fetching && <LinearProgress sx={{ mb: 2 }} />}
         {error && (
           <Alert severity="error" sx={{ mb: 2 }}>
-            {error}
+            {(error as Error).message}
           </Alert>
         )}
         <Grid container spacing={4}>

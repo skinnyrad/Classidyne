@@ -7,7 +7,7 @@ import Navbar from "./components/Navbar";
 import SignalClassification from "./pages/SignalClassification";
 import UploadSignalImages from "./pages/UploadSignalImages";
 import DeleteImage from "./pages/DeleteImage";
-import SearchImage from "./pages/SearchImage";
+import ManageImages from "./pages/ManageImages";
 import TypeViewer from "./pages/TypeViewer";
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -20,6 +20,10 @@ const darkTheme = createTheme({
     primary: {
       main: "#d690cf",
     },
+  },
+  typography: { fontFamily: "Open Sans, Arial" },
+  shape: {
+    borderRadius: 15,
   },
 });
 
@@ -38,8 +42,7 @@ const App: React.FC = () => (
             path="/upload-signal-images"
             element={<UploadSignalImages />}
           />
-          <Route path="/delete-image" element={<DeleteImage />} />
-          <Route path="/search-image" element={<SearchImage />} />
+          <Route path="/manage-images" element={<ManageImages />} />
           <Route path="/type-viewer" element={<TypeViewer />} />
           <Route path="*" element={<SignalClassification />} />
         </Routes>

@@ -349,11 +349,14 @@ def get_stats():
 def delete_image(identifier):
     try:
         # Delete by filehash
-        deleted = CLIENT.delete(collection_name="waterfall_embeddings", filter=f'hash == "{identifier}"').get('deleted_count', 0)
-        deleted += CLIENT.delete(collection_name="fft_embeddings", filter=f'hash == "{identifier}"').get('deleted_count', 0)
-        # Delete by filename
-        deleted += CLIENT.delete(collection_name="waterfall_embeddings", filter=f'filepath like "%/{identifier}"').get('deleted_count', 0)
-        deleted += CLIENT.delete(collection_name="fft_embeddings", filter=f'filepath like "%/{identifier}"').get('deleted_count', 0)
+        deleted = CLIENT.delete(collection_name="waterfall", filter=f'hash == "{identifier}"').get('deleted_count', 0)
+        deleted += CLIENT.delete(collection_name="fft", filter=f'hash == "{identifier}"').get('deleted_count', 0)
+        
+        # If identifier is a filepath, strip to filename
+        filename = os.path.basename(identifier)
+        # Delete by filename (should match filepaths ending with filename)
+        deleted += CLIENT.delete(collection_name="waterfall", filter=f'filepath like "%/{filename}"').get('deleted_count', 0)
+        deleted += CLIENT.delete(collection_name="fft", filter=f'filepath like "%/{filename}"').get('deleted_count', 0)
         
         if deleted:
             return JSONResponse({"success": True, "message": f"Deleted {deleted} images with identifier '{identifier}'."})
@@ -363,16 +366,24 @@ def delete_image(identifier):
         logger.error(f"Error deleting image: {e}")
         return JSONResponse({"success": False, "message": f"Error deleting image: {e}"}, status_code=500)
 
+
+@app.get("/api/find_image", summary="Find an image by its identifier (filehash or filename)")
 def find_image(identifier):
     try:
         # Query both collections by hash
-        results = CLIENT.query(collection_name="waterfall_embeddings", filter=f'hash == "{identifier}"', limit=1)
-        if not results: results = CLIENT.query(collection_name="fft_embeddings", filter=f'hash == "{identifier}"', limit=1)
-        # Query both collections by filename
-        if not results: results = CLIENT.query(collection_name="waterfall_embeddings", filter=f'filepath like "%/{identifier}"', limit=1)
-        if not results: results = CLIENT.query(collection_name="fft_embeddings", filter=f'filepath like "%/{identifier}"', limit=1)
+        results = CLIENT.query(collection_name="waterfall", filter=f'hash == "{identifier}"', limit=1)
+        if not results or len(results) == 0:
+            results = CLIENT.query(collection_name="fft", filter=f'hash == "{identifier}"', limit=1)
+        
+        if not results or len(results) == 0:
+            # If identifier is a filepath, strip to filename
+            filename = os.path.basename(identifier)
+            # Try pattern matching for filepaths ending with filename
+            results = CLIENT.query(collection_name="waterfall", filter=f'filepath like "%/{filename}"', limit=1)
+        if not results or len(results) == 0:
+            results = CLIENT.query(collection_name="fft", filter=f'filepath like "%/{filename}"', limit=1)
                 
-        if results[0]:
+        if results and results[0]:
             logger.info(f"Found a matching image.")
             hit = results[0]
             filepath = hit['filepath']
@@ -395,10 +406,87 @@ def find_image(identifier):
         else: 
             logger.info("No matching images found.")
             return JSONResponse({"success": False, "message": "No matching images found."}, status_code=404)
-
     except Exception as e:
         logger.error(f"Error querying image: {e}")
         return JSONResponse({"success": False, "message": f"Error querying image: {e}"}, status_code=500)
+    
+@app.get('/api/waterfall_types', summary="List all signal types in the waterfall collection")
+def get_waterfall_types():
+    try:
+        base_path = os.path.join('./datasets', 'waterfall')
+        types = sorted([
+            name for name in os.listdir(base_path)
+            if os.path.isdir(os.path.join(base_path, name))
+        ])
+        return JSONResponse({
+            "success": True,
+            "message": "Waterfall types listed successfully.",
+            "types": types
+        })
+    except Exception as e:
+        logger.error(f"Error listing waterfall types: {e}")
+        return JSONResponse(
+            {"success": False, "message": f"Error listing waterfall types: {e}"},
+            status_code=500
+        )
+
+@app.get('/api/fft_types', summary="List all signal types in the fft collection")
+def get_fft_types():
+    try:
+        base_path = os.path.join('./datasets', 'fft')
+        types = sorted([
+            name for name in os.listdir(base_path)
+            if os.path.isdir(os.path.join(base_path, name))
+        ])
+        return JSONResponse({
+            "success": True,
+            "message": "FFT types listed successfully.",
+            "types": types
+        })
+    except Exception as e:
+        logger.error(f"Error listing FFT types: {e}")
+        return JSONResponse(
+            {"success": False, "message": f"Error listing FFT types: {e}"},
+            status_code=500
+        )
+
+@app.get('/api/type_collage', summary="Get a collage of images for a specific signal type")
+def get_type_collage(type: str, collection: str):
+    try:
+        # Prepare full directory path
+        full_path = os.path.join('./datasets', collection, type)
+        # Gather and resize images
+        # Step 1: Get only the filenames with accepted extensions, limited to 25
+        img_files = [
+            img for img in os.listdir(full_path)
+            if img.lower().endswith(ACCEPTED_FILETYPES)
+        ][:25]
+
+        # Step 2: Open and resize only those 25 files
+        images = [
+            Image.open(os.path.join(full_path, img)).resize((150, 150))
+            for img in img_files
+        ]
+        # Create a new blank (RGB) image, 5x5 grid of 150x150 squares
+        concatenated_image = Image.new("RGB", (150 * 5, 150 * 5))
+        # Paste images into the grid
+        for idx, img in enumerate(images):
+            x = idx % 5
+            y = idx // 5
+            concatenated_image.paste(img, (x * 150, y * 150))
+        
+        concatenated_image_base64 = image_to_base64(concatenated_image)
+        return JSONResponse({
+            "success": True,
+            "message": "Collage generated successfully.",
+            "collage_base64": concatenated_image_base64
+        })
+    except Exception as e:
+        logger.error(f"Error generating collage: {e}")
+        return JSONResponse(
+            {"success": False, "message": f"Error generating collage: {e}"},
+            status_code=500
+        )
 
 def identify_frequency(freq):
     # Check if freq is a valid number
