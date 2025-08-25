@@ -10,18 +10,13 @@ from pymilvus import MilvusClient
 import hashlib
 from collections import Counter
 from time import sleep
-import io
 import base64
-
 from torchvision import transforms as tv_transforms
 from fastapi import FastAPI, UploadFile, BackgroundTasks, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-import json
-import torch
-from PIL import Image
+from fastapi.staticfiles import StaticFiles
 import io
-import os
 from typing import List
 import logging
 
@@ -526,3 +521,5 @@ def identify_frequency(freq):
                         possible_signals.append(signal_type)
                     
     return possible_signals
+
+app.mount("/", StaticFiles(directory="static", html=True), name="static")
