@@ -167,8 +167,9 @@ const UploadSignalImages: React.FC = () => {
                 primary={
                   <span>
                     <strong>Upload:</strong> Once you've organized your images,
-                    click the 'Upload' button to add them to the signal
-                    database.
+                    click the 'START EMBEDDING' button to add them to the signal
+                    database. This will process and embed the new images,
+                    skipping any duplicates.
                   </span>
                 }
               />
@@ -193,9 +194,8 @@ const UploadSignalImages: React.FC = () => {
               <ListItemText
                 primary={
                   <span>
-                    To reset the database, delete the{" "}
-                    <code>image-vectordb.db</code> file before starting the
-                    embedding process.
+                    To reset the database, delete the <code>classidyne.db</code>{" "}
+                    file before starting the embedding process.
                   </span>
                 }
               />

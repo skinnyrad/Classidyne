@@ -185,7 +185,7 @@ const SignalClassification: React.FC = () => {
       {data?.collage_image && (
         <Box mb={3}>
           <Typography variant="h6" gutterBottom>
-            Simmilar Signals
+            Similar Signals
           </Typography>
           <Card>
             <CardMedia
