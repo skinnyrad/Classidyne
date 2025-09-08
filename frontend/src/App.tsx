@@ -6,7 +6,6 @@ import Navbar from "./components/Navbar";
 
 import SignalClassification from "./pages/SignalClassification";
 import UploadSignalImages from "./pages/UploadSignalImages";
-import DeleteImage from "./pages/DeleteImage";
 import ManageImages from "./pages/ManageImages";
 import TypeViewer from "./pages/TypeViewer";
 

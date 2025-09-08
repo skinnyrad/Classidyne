@@ -15,9 +15,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 
 const findImage = async (identifier: string) => {
   const res = await fetch(
-    `http://localhost:8000/api/find_image?identifier=${encodeURIComponent(
-      identifier
-    )}`
+    `/api/find_image?identifier=${encodeURIComponent(identifier)}`
   );
   const data = await res.json();
   if (!data.success) throw new Error(data.message ?? "Not found");
@@ -26,9 +24,7 @@ const findImage = async (identifier: string) => {
 
 const deleteImage = async (identifier: string) => {
   const res = await fetch(
-    `http://localhost:8000/api/delete_image?identifier=${encodeURIComponent(
-      identifier
-    )}`,
+    `/api/delete_image?identifier=${encodeURIComponent(identifier)}`,
     {
       method: "DELETE",
     }

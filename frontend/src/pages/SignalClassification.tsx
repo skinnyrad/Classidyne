@@ -40,7 +40,7 @@ const classifyImage = async ({
   formData.append("collection", collection);
   formData.append("similarity_threshold", threshold.toString());
 
-  const res = await fetch("http://localhost:8000/api/classify", {
+  const res = await fetch("/api/classify", {
     method: "POST",
     body: formData,
   });

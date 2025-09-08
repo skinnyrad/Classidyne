@@ -19,6 +19,11 @@ from fastapi.staticfiles import StaticFiles
 import io
 from typing import List
 import logging
+import uvicorn
+import socket
+import sys
+
+
 
 logger = logging.getLogger("uvicorn")
 
@@ -523,3 +528,22 @@ def identify_frequency(freq):
     return possible_signals
 
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
+
+if __name__ == "__main__":
+    HOST = "0.0.0.0"
+    START_PORT = 5000
+    END_PORT = 5005
+
+    for port in range(START_PORT, END_PORT + 1):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind((HOST, port))
+                s.close()
+                print(f"Starting server on port {port}")
+                uvicorn.run("app:app", host=HOST, port=port, reload=False)
+                break
+            except OSError:
+                print(f"Port {port} unavailable, trying next...")
+    else:
+        print(f"No ports available between {START_PORT} and {END_PORT}. Server aborting.")
+        sys.exit(1)

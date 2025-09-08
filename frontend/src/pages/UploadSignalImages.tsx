@@ -28,7 +28,7 @@ const UploadSignalImages: React.FC = () => {
   const queryClient = useQueryClient();
 
   const fetchStats = async () => {
-    const res = await fetch("http://localhost:8000/api/stats");
+    const res = await fetch("/api/stats");
     const data = await res.json();
     if (!data.success)
       throw new Error(data.message ?? "Failed to fetch stats.");
@@ -58,7 +58,7 @@ const UploadSignalImages: React.FC = () => {
   const startEmbedding = async () => {
     setEmbeddingLoading(true);
     try {
-      const res = await fetch("http://localhost:8000/api/start-embedding", {
+      const res = await fetch("/api/start-embedding", {
         method: "POST",
       });
       const data = await res.json();

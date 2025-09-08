@@ -19,9 +19,7 @@ import { useQuery } from "@tanstack/react-query";
 
 const fetchTypes = async (collection: string) => {
   const endpoint =
-    collection === "waterfall"
-      ? "http://localhost:8000/api/waterfall_types"
-      : "http://localhost:8000/api/fft_types";
+    collection === "waterfall" ? "/api/waterfall_types" : "/api/fft_types";
   const res = await fetch(endpoint);
   const data = await res.json();
   if (!data.success) throw new Error(data.message ?? "Failed to fetch types");
@@ -30,7 +28,7 @@ const fetchTypes = async (collection: string) => {
 
 const fetchCollage = async (collection: string, type: string) => {
   const res = await fetch(
-    `http://localhost:8000/api/type_collage?collection=${collection}&type=${encodeURIComponent(
+    `/api/type_collage?collection=${collection}&type=${encodeURIComponent(
       type
     )}`
   );
