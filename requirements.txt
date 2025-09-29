@@ -1,5 +1,5 @@
 Pillow
-pymilvus
+pymilvus[milvus-lite]
 scikit_learn
 timm
 torch
