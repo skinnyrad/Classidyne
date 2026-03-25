@@ -1,6 +1,6 @@
 # Classidyne
 
-Classidyne is an AI-powered RF signal classifier that uses computer vision techniques to classify various types of RF signals, such as WiFi, Bluetooth, Cellular, LoRa, and more. This project leverages deep learning models to extract features from images and uses a vector database (Milvus) to find and classify similar signals.
+Classidyne is an AI-powered RF signal classifier that uses computer vision techniques to classify various types of RF signals, such as WiFi, Bluetooth, Cellular, LoRa, and more. This project leverages deep learning models to extract features from images and uses DuckDB as a local vector database to find and classify similar signals.
 
 ## Getting Started
 
@@ -9,8 +9,9 @@ Follow these steps to set up and run Classidyne on your local machine.
 ### Prerequisites
 
 - A Linux or Mac Computer
-- Python 3.10 or higher
-- pip (Python package installer)
+- Go 1.25+
+- Bun 1.2+
+- ONNX Runtime shared library installed on your system
 
 ### Installation
 
@@ -52,24 +53,26 @@ Classidyne uses [Git LFS](https://git-lfs.com/) to manage the RadioNet model.
    git lfs pull
    ```
 
-4. **Create a virtual environment:**
+4. **Install frontend dependencies:**
 
    ```sh
-   python3 -m venv venv-classidyne
+   cd frontend
+   bun install
    ```
 
-5. **Activate the virtual environment:**
+5. **Build the frontend:**
 
    ```sh
-   source venv-classidyne/bin/activate
+   bun run build
+   cd ..
    ```
 
-   Hint: You will need to rerun this command every time you relaunch the app.
+   This generates `frontend/build`, which is embedded into the Go binary at build time.
 
-6. **Install the required dependencies:**
+6. **Fetch Go dependencies:**
 
    ```sh
-   pip install -r requirements.txt
+   go mod download
    ```
 
 7. **Download the Dataset**
@@ -94,11 +97,29 @@ datasets/
         └── c17afe0fe5cc3cc1308605cf390ecbb5.png
 ```
 
-8. **Run the project:**
+8. **Build the Go application:**
 
 ```sh
-python app.py
+go build -o classidyne .
 ```
+
+9. **Run the application:**
+
+By default, the app looks for ONNX Runtime at `/opt/homebrew/lib/libonnxruntime.dylib`.
+
+If your ONNX Runtime library is in a different location, set `ORT_SHARED_LIB`:
+
+```sh
+export ORT_SHARED_LIB=/path/to/libonnxruntime.dylib
+```
+
+Then start the binary:
+
+```sh
+./classidyne
+```
+
+The server listens on the first available port from `5000` to `5005`.
 
 ## Usage
 
@@ -123,20 +144,16 @@ python app.py
 ### Add New Signals
 
 1. **Organize Your Images:**
-
    - Place each image in the correct folder based on its signal type.
    - Example: `datasets/waterfall/wifi/` for waterfall WiFi signals, `datasets/fft/bluetooth/` for fft Bluetooth signals.
 
 2. **Folder Structure:**
-
    - Ensure all images are in folders following this pattern: `datasets/img-type/signal-type/` where `img-type` is either waterfall or fft and `signal-type` is the specific type of signal (e.g., wifi, bluetooth).
 
 3. **Unknown Signals:**
-
    - If you're unsure of the signal type, place the image in `datasets/img-type/unknown/`.
 
 4. **Upload Images:**
-
    - Navigate to the "Upload Signal Images" tab.
    - Click the "START EMBEDDING" button to add the images to the signal database.
 
