@@ -15,26 +15,6 @@ Follow these steps to set up and run Classidyne on your local machine.
 
 ### Installation
 
-**IMPORTANT: Using Git LFS (Large File Storage)**
-
-Classidyne uses [Git LFS](https://git-lfs.com/) to manage the RadioNet model.  
-**You must install Git LFS before cloning or pulling the repository to ensure all large files are downloaded correctly.**
-
-- **macOS (Homebrew):**
-
-  ```sh
-  brew install git-lfs
-  git lfs install
-  ```
-
-- **Linux (APT):**
-
-  ```sh
-  sudo apt update
-  sudo apt install git-lfs
-  git lfs install
-  ```
-
 1. **Clone the repository:**
 
    ```sh
@@ -47,20 +27,14 @@ Classidyne uses [Git LFS](https://git-lfs.com/) to manage the RadioNet model.
    cd Classidyne
    ```
 
-3. **Pull the model:**
-
-   ```sh
-   git lfs pull
-   ```
-
-4. **Install frontend dependencies:**
+3. **Install frontend dependencies:**
 
    ```sh
    cd frontend
    bun install
    ```
 
-5. **Build the frontend:**
+4. **Build the frontend:**
 
    ```sh
    bun run build
@@ -69,13 +43,13 @@ Classidyne uses [Git LFS](https://git-lfs.com/) to manage the RadioNet model.
 
    This generates `frontend/build`, which is embedded into the Go binary at build time.
 
-6. **Fetch Go dependencies:**
+5. **Fetch Go dependencies:**
 
    ```sh
    go mod download
    ```
 
-7. **Download the Dataset**
+6. **Download the Dataset**
 
 To use this project, you will need the Radio Frequency (RF) Signal Image Classification dataset, which is available on [Kaggle: RF Signal Image Classification Dataset](https://www.kaggle.com/datasets/halcy0nic/radio-frequecy-rf-signal-image-classification). Download the dataset from Kaggle and unzip it into your project directory. The dataset already has the correct folder structure, so no additional organization is required. Once unzipped, you will be able to embed the images using the provided tools in this repository.
 
@@ -97,13 +71,13 @@ datasets/
         └── c17afe0fe5cc3cc1308605cf390ecbb5.png
 ```
 
-8. **Build the Go application:**
+7. **Build the Go application:**
 
 ```sh
 go build -o classidyne .
 ```
 
-9. **Run the application:**
+8. **Run the application:**
 
 By default, the app looks for ONNX Runtime at `/opt/homebrew/lib/libonnxruntime.dylib`.
 
