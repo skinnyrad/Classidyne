@@ -18,7 +18,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 import io
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import logging
 import uvicorn
 import socket
@@ -300,6 +300,91 @@ def identify_frequency(freq):
     return possible_signals
 
 
+def _candidate(image_id: str, metadata: dict, collection: str) -> Dict[str, Any]:
+    return {
+        "id": image_id,
+        "metadata": metadata,
+        "collection": collection,
+    }
+
+
+def _dedupe_candidates(candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    unique = {}
+    for c in candidates:
+        key = (c["collection"], c["id"])
+        if key not in unique:
+            unique[key] = c
+    return list(unique.values())
+
+
+def _lookup_in_collection(identifier: str, collection_name: str) -> Dict[str, List[Dict[str, Any]]]:
+    """
+    Lookup identifier inside a single collection.
+    Priority buckets are returned separately so callers can enforce:
+    id > exact filepath > partial filename/path match.
+    """
+    col = CLIENT.get_collection(collection_name)
+    buckets: Dict[str, List[Dict[str, Any]]] = {
+        "id_matches": [],
+        "path_matches": [],
+        "partial_matches": [],
+    }
+
+    try:
+        res = col.get(ids=[identifier], include=["metadatas"])
+        for image_id, meta in zip(res.get("ids", []), res.get("metadatas", [])):
+            if meta:
+                buckets["id_matches"].append(_candidate(image_id, meta, collection_name))
+    except Exception as e:
+        logger.warning(f"ID lookup failed for '{identifier}' in {collection_name}: {e}")
+
+    try:
+        res = col.get(where={"filepath": {"$eq": identifier}}, include=["metadatas"])
+        for image_id, meta in zip(res.get("ids", []), res.get("metadatas", [])):
+            if meta:
+                buckets["path_matches"].append(_candidate(image_id, meta, collection_name))
+    except Exception as e:
+        logger.warning(f"Path lookup failed for '{identifier}' in {collection_name}: {e}")
+
+    search_term = os.path.basename(identifier).strip().lower()
+    if search_term:
+        try:
+            all_items = col.get(include=["metadatas"])
+            partial = []
+            for image_id, meta in zip(all_items.get("ids", []), all_items.get("metadatas", [])):
+                if not meta:
+                    continue
+                filepath = meta.get("filepath", "")
+                basename = os.path.basename(filepath)
+                if search_term in basename.lower() or search_term in filepath.lower():
+                    partial.append(_candidate(image_id, meta, collection_name))
+
+            partial.sort(key=lambda c: c["metadata"].get("filepath", ""))
+            buckets["partial_matches"] = partial
+        except Exception as e:
+            logger.warning(f"Partial lookup failed for '{identifier}' in {collection_name}: {e}")
+
+    buckets["id_matches"] = _dedupe_candidates(buckets["id_matches"])
+    buckets["path_matches"] = _dedupe_candidates(buckets["path_matches"])
+    buckets["partial_matches"] = _dedupe_candidates(buckets["partial_matches"])
+    return buckets
+
+
+def _resolve_identifier_candidates(identifier: str) -> List[Dict[str, Any]]:
+    id_matches, path_matches, partial_matches = [], [], []
+    for col_name in VALID_COLLECTIONS:
+        buckets = _lookup_in_collection(identifier, col_name)
+        id_matches.extend(buckets["id_matches"])
+        path_matches.extend(buckets["path_matches"])
+        partial_matches.extend(buckets["partial_matches"])
+
+    if id_matches:
+        return _dedupe_candidates(id_matches)
+    if path_matches:
+        return _dedupe_candidates(path_matches)
+    return _dedupe_candidates(partial_matches)
+
+
 # ----------------- FastAPI Setup -----------------
 
 app = FastAPI(
@@ -440,41 +525,28 @@ def get_stats():
 @app.delete("/api/delete_image", summary="Delete an image by filehash or filepath")
 def delete_image(identifier: str):
     try:
-        deleted = 0
-        filename = os.path.basename(identifier)  # FIX: define before any conditional branch
-
-        for col_name in VALID_COLLECTIONS:
-            col = CLIENT.get_collection(col_name)
-            # Try direct ID delete (filehash IS the ChromaDB ID)
-            try:
-                existing = col.get(ids=[identifier])
-                if existing["ids"]:
-                    col.delete(ids=[identifier])
-                    deleted += 1
-            except Exception:
-                pass
-            # Fallback: delete by filepath metadata match
-            try:
-                by_path = col.get(where={"filepath": {"$eq": identifier}})
-                if by_path["ids"]:
-                    col.delete(ids=by_path["ids"])
-                    deleted += len(by_path["ids"])
-            except Exception:
-                pass
-            # Fallback: match by filename suffix
-            if filename != identifier:
-                try:
-                    by_name = col.get(where={"filepath": {"$contains": filename}})
-                    if by_name["ids"]:
-                        col.delete(ids=by_name["ids"])
-                        deleted += len(by_name["ids"])
-                except Exception:
-                    pass
-
-        if deleted:
-            return JSONResponse({"success": True, "message": f"Deleted {deleted} image(s) with identifier '{identifier}'."})
-        else:
+        candidates = _resolve_identifier_candidates(identifier)
+        if not candidates:
             return JSONResponse({"success": False, "message": "No images found with the given identifier."}, status_code=404)
+
+        if len(candidates) > 1:
+            paths = [c["metadata"].get("filepath", "") for c in candidates[:20]]
+            return JSONResponse({
+                "success": False,
+                "message": "Multiple images match this identifier. Please provide a full file path or file hash.",
+                "matches": paths,
+            }, status_code=409)
+
+        target = candidates[0]
+        col = CLIENT.get_collection(target["collection"])
+        col.delete(ids=[target["id"]])
+        filepath = target["metadata"].get("filepath", "")
+        return JSONResponse({
+            "success": True,
+            "message": f"Deleted image '{filepath}'.",
+            "filepath": filepath,
+            "filehash": target["id"],
+        })
     except Exception as e:
         logger.error(f"Error deleting image: {e}")
         return JSONResponse({"success": False, "message": f"Error deleting image: {e}"}, status_code=500)
@@ -483,33 +555,21 @@ def delete_image(identifier: str):
 @app.get("/api/find_image", summary="Find an image by filehash or filepath")
 def find_image(identifier: str):
     try:
-        filename = os.path.basename(identifier)  # FIX: always defined before any conditional branch
-        found = None
+        candidates = _resolve_identifier_candidates(identifier)
+        if not candidates:
+            return JSONResponse({"success": False, "message": "No matching images found."}, status_code=404)
 
-        for col_name in VALID_COLLECTIONS:
-            col = CLIENT.get_collection(col_name)
+        if len(candidates) > 1:
+            paths = [c["metadata"].get("filepath", "") for c in candidates[:20]]
+            return JSONResponse({
+                "success": False,
+                "message": "Multiple images match this identifier. Please provide a full file path or file hash.",
+                "matches": paths,
+            }, status_code=409)
 
-            # Try direct ID lookup (filehash is the ID)
-            res = col.get(ids=[identifier], include=["metadatas"])
-            if res["ids"]:
-                found = res["metadatas"][0]
-                break
-
-            # Try exact filepath match
-            res = col.get(where={"filepath": {"$eq": identifier}}, include=["metadatas"])
-            if res["ids"]:
-                found = res["metadatas"][0]
-                break
-
-            # Fallback: filename suffix match
-            if filename != identifier:
-                res = col.get(where={"filepath": {"$contains": filename}}, include=["metadatas"])
-                if res["ids"]:
-                    found = res["metadatas"][0]
-                    break
-
+        found = candidates[0]["metadata"]
+        filepath = found["filepath"]
         if found:
-            filepath = found["filepath"]
             img = Image.open(filepath).resize((150, 150))
             return JSONResponse({
                 "success": True,
@@ -519,8 +579,6 @@ def find_image(identifier: str):
                 "class": found["class"],
                 "image": image_to_base64(img)
             })
-        else:
-            return JSONResponse({"success": False, "message": "No matching images found."}, status_code=404)
     except Exception as e:
         logger.error(f"Error finding image: {e}")
         return JSONResponse({"success": False, "message": f"Error finding image: {e}"}, status_code=500)
