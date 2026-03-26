@@ -18,11 +18,11 @@ import (
 	"io"
 	"io/fs"
 	"log"
-	"math"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -46,6 +46,7 @@ var (
 	mean = []float32{0.485, 0.456, 0.406}
 	std  = []float32{0.229, 0.224, 0.225}
 
+	// Map for quick lookup of accepted image file types.
 	acceptedFileTypes = map[string]struct{}{
 		".jpeg": {}, ".jpg": {}, ".png": {}, ".gif": {}, ".tiff": {}, ".tif": {}, ".bmp": {}, ".webp": {},
 	}
@@ -66,10 +67,90 @@ var (
 type Extractor struct {
 	modelPath string
 	mu        sync.Mutex
+	input     *ort.Tensor[float32]
+	output    *ort.Tensor[float32]
+	session   *ort.AdvancedSession
 }
 
-func newExtractor(modelPath string) *Extractor {
-	return &Extractor{modelPath: modelPath}
+func newExtractor(modelPath string) (*Extractor, error) {
+	inputShape := ort.NewShape(1, 3, 224, 224)
+	inputTensor, err := ort.NewEmptyTensor[float32](inputShape)
+	if err != nil {
+		return nil, err
+	}
+
+	outputShape := ort.NewShape(1, 512)
+	outputTensor, err := ort.NewEmptyTensor[float32](outputShape)
+	if err != nil {
+		inputTensor.Destroy()
+		return nil, err
+	}
+
+	session, err := ort.NewAdvancedSession(
+		modelPath,
+		[]string{"input"},
+		[]string{"features"},
+		[]ort.Value{inputTensor},
+		[]ort.Value{outputTensor},
+		nil,
+	)
+	if err != nil {
+		outputTensor.Destroy()
+		inputTensor.Destroy()
+		return nil, err
+	}
+
+	return &Extractor{
+		modelPath: modelPath,
+		input:     inputTensor,
+		output:    outputTensor,
+		session:   session,
+	}, nil
+}
+
+// runInference uses fixed tensor shapes: input [1, 3, 224, 224], output [1, 512].
+func (e *Extractor) runInference(inputData []float32) ([]float32, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.session == nil || e.input == nil || e.output == nil {
+		return nil, fmt.Errorf("extractor is not initialized")
+	}
+
+	inputTensorData := e.input.GetData()
+	if len(inputData) != len(inputTensorData) {
+		return nil, fmt.Errorf("invalid input size: got %d, want %d", len(inputData), len(inputTensorData))
+	}
+
+	copy(inputTensorData, inputData)
+
+	if err := e.session.Run(); err != nil {
+		return nil, err
+	}
+
+	// Copy output data to avoid race conditons.
+	out := e.output.GetData()
+	copyOut := make([]float32, len(out))
+	copy(copyOut, out)
+	return copyOut, nil
+}
+
+func (e *Extractor) Destroy() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.session != nil {
+		e.session.Destroy()
+		e.session = nil
+	}
+	if e.output != nil {
+		e.output.Destroy()
+		e.output = nil
+	}
+	if e.input != nil {
+		e.input.Destroy()
+		e.input = nil
+	}
 }
 
 // preprocessImage converts image to grayscale->RGB, resizes to 224x224,
@@ -117,56 +198,12 @@ func preprocessImage(img image.Image, outH, outW int) []float32 {
 }
 
 func (e *Extractor) EmbedImage(img image.Image) ([]float32, error) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
 	inputData := preprocessImage(img, 224, 224)
-	inputShape := ort.NewShape(1, 3, 224, 224)
-	inputTensor, err := ort.NewTensor(inputShape, inputData)
+	out, err := e.runInference(inputData)
 	if err != nil {
 		return nil, err
 	}
-	defer inputTensor.Destroy()
-
-	outputShape := ort.NewShape(1, 512)
-	outputTensor, err := ort.NewEmptyTensor[float32](outputShape)
-	if err != nil {
-		return nil, err
-	}
-	defer outputTensor.Destroy()
-
-	session, err := ort.NewAdvancedSession(
-		e.modelPath,
-		[]string{"input"},
-		[]string{"features"},
-		[]ort.Value{inputTensor},
-		[]ort.Value{outputTensor},
-		nil,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer session.Destroy()
-
-	if err := session.Run(); err != nil {
-		return nil, err
-	}
-
-	out := outputTensor.GetData()
-	var sum float64
-	for _, v := range out {
-		sum += float64(v * v)
-	}
-	norm := float32(math.Sqrt(sum))
-	if norm > 0 {
-		for i := range out {
-			out[i] /= norm
-		}
-	}
-
-	copyOut := make([]float32, len(out))
-	copy(copyOut, out)
-	return copyOut, nil
+	return out, nil
 }
 
 func fileToImage(path string) (image.Image, error) {
@@ -283,14 +320,6 @@ func computeSHA256(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-func classifyFromPath(path string) ([]float32, error) {
-	img, err := fileToImage(path)
-	if err != nil {
-		return nil, err
-	}
-	return extractor.EmbedImage(img)
-}
-
 func existsByHash(collection, hash string) (bool, error) {
 	var count int
 	err := db.QueryRow("SELECT COUNT(*) FROM "+collection+" WHERE filehash = ?", hash).Scan(&count)
@@ -333,48 +362,83 @@ func insertBatch(collection string, rows []map[string]interface{}) int {
 
 func embedDataset(folderPath, collection string) int {
 	const batchSize = 500
+	workerCount := runtime.NumCPU()
+	if workerCount < 1 {
+		workerCount = 1
+	}
+
+	jobs := make(chan string, workerCount*2)
+	results := make(chan map[string]interface{}, batchSize)
+
+	var wg sync.WaitGroup
+	for i := 0; i < workerCount; i++ {
+		wg.Go(func() {
+			for path := range jobs {
+				// Calculate file hash to avoid redundant work on duplicates.
+				filehash, err := computeSHA256(path)
+				if err != nil {
+					log.Printf("failed hash for %s: %v", path, err)
+					continue
+				}
+
+				exists, err := existsByHash(collection, filehash)
+				if err == nil && exists {
+					continue
+				}
+
+				// Embed the image and prepare result for insertion.
+				img, err := fileToImage(path)
+				if err != nil {
+					log.Printf("failed embedding for %s: %v", path, err)
+					continue
+				}
+
+				emb, err := extractor.EmbedImage(img)
+
+				if err != nil {
+					log.Printf("failed embedding for %s: %v", path, err)
+					continue
+				}
+
+				results <- map[string]interface{}{
+					"vector":   emb,
+					"filepath": path,
+					"filehash": filehash,
+					"class":    filepath.Base(filepath.Dir(path)),
+				}
+			}
+		})
+	}
+
+	go func() {
+		_ = filepath.WalkDir(folderPath, func(path string, d os.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return nil
+			}
+			ext := strings.ToLower(filepath.Ext(d.Name()))
+			if _, ok := acceptedFileTypes[ext]; !ok {
+				return nil
+			}
+			jobs <- path
+			return nil
+		})
+		close(jobs)
+	}()
+
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
 	batchData := make([]map[string]interface{}, 0, batchSize)
 	inserted := 0
-
-	_ = filepath.WalkDir(folderPath, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return nil
-		}
-		ext := strings.ToLower(filepath.Ext(d.Name()))
-		if _, ok := acceptedFileTypes[ext]; !ok {
-			return nil
-		}
-
-		filehash, err := computeSHA256(path)
-		if err != nil {
-			log.Printf("failed hash for %s: %v", path, err)
-			return nil
-		}
-
-		exists, err := existsByHash(collection, filehash)
-		if err == nil && exists {
-			return nil
-		}
-
-		emb, err := classifyFromPath(path)
-		if err != nil {
-			log.Printf("failed embedding for %s: %v", path, err)
-			return nil
-		}
-
-		batchData = append(batchData, map[string]interface{}{
-			"vector":   emb,
-			"filepath": path,
-			"filehash": filehash,
-			"class":    filepath.Base(filepath.Dir(path)),
-		})
-
+	for row := range results {
+		batchData = append(batchData, row)
 		if len(batchData) >= batchSize {
 			inserted += insertBatch(collection, batchData)
 			batchData = batchData[:0]
 		}
-		return nil
-	})
+	}
 
 	if len(batchData) > 0 {
 		inserted += insertBatch(collection, batchData)
@@ -900,7 +964,11 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	extractor = newExtractor(modelPath)
+	extractor, err = newExtractor(modelPath)
+	if err != nil {
+		log.Fatalf("failed to initialize extractor: %v", err)
+	}
+	defer extractor.Destroy()
 
 	if err := initFrequencies(); err != nil {
 		log.Fatalf("failed to load known frequencies: %v", err)
