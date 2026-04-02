@@ -1,6 +1,6 @@
 # Classidyne
 
-Classidyne is an AI-powered RF signal classifier that uses computer vision techniques to classify various types of RF signals, such as WiFi, Bluetooth, Cellular, LoRa, and more. This project leverages deep learning models to extract features from images and uses a vector database (Milvus) to find and classify similar signals.
+Classidyne is an AI-powered RF signal classifier that uses computer vision techniques to classify various types of RF signals, such as WiFi, Bluetooth, Cellular, LoRa, and more. This project leverages deep learning models to extract features from images and uses a vector database to find and classify similar signals.
 
 ## Getting Started
 
