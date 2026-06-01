@@ -163,3 +163,7 @@ cython_debug/
 
 # MacOS
 .DS_Store
+
+# Datasets and VectorDB
+classidyne_db/
+datasets/
