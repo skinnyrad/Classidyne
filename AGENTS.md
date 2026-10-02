@@ -1,45 +1,67 @@
 # AGENTS.md
 
+Classidyne classifies RF signal images (waterfall and FFT) by embedding them with RadioNet (ResNet-34) and doing nearest-neighbor search in ChromaDB. Backend is FastAPI; frontend is React.
+
 ## Commands
 
 - **Backend setup:** `python3 -m venv venv-classidyne && source venv-classidyne/bin/activate && pip install -r requirements.txt`
-- **Backend run:** `python app.py` — starts uvicorn, auto-picks a port between 5000–5005
-- **Backend test (using existing `venv`):** `source venv/bin/activate && python -m pytest tests/ -v` — tests connect to the running server (default port 5000; override with `CLASSIDYNE_PORT`)
+- **Backend run:** `python app.py` — starts uvicorn on `0.0.0.0`, auto-picks the first free port in 5000–5005 (`reload=False`)
+- **Backend test:** `python -m pytest tests/ -v` inside an activated venv — tests hit the **running** server (default port 5000; override with `CLASSIDYNE_PORT`). Standalone: `python tests/test_api.py --host localhost --port 5000`
 - **Frontend setup:** `cd frontend && npm ci`
 - **Frontend dev:** `cd frontend && npm start`
-- **Frontend build:** `cd frontend && npm run build` — output goes to `frontend/build`, NOT `static/` (must sync manually)
+- **Frontend build:** `cd frontend && npm run build` — output goes to `frontend/build`, NOT `static/` (sync manually: copy `frontend/build/*` into `static/`)
 - **Frontend test:** `cd frontend && CI=true npm test -- --runInBand --watch=false`
 - **Frontend single test:** `cd frontend && CI=true npm test -- --runInBand src/App.test.tsx --watch=false`
 - **No standalone lint** — CRA runs ESLint during `npm start` and `npm run build`
 
 ## Prerequisites
 
-- **Git LFS is mandatory.** `RadioNet/RadioNet.pth` is LFS-tracked. Without `git lfs pull`, backend import will fail at module level before any request is served.
-- **Kaggle dataset** must be downloaded and unzipped into `datasets/` with structure `datasets/{waterfall,fft}/<signal-type>/` before classification works. A fresh checkout cannot classify anything until embedding is run.
+- **Git LFS is mandatory.** `RadioNet/RadioNet.pth` is LFS-tracked. Without `git lfs pull`, backend import fails at module level before any request is served.
+- **Kaggle dataset** must be downloaded and unzipped into `datasets/` as `datasets/{waterfall,fft}/<signal-type>/<image>`. `datasets/` is gitignored. A fresh checkout cannot classify anything until embedding has run (`POST /api/start-embedding`, or the UI).
+- `classidyne_db/` (Chroma persistence) is created on first import and is not checked in.
+
+## Layout
+
+- `app.py` — entire backend (~690 lines): model, DB, helpers, endpoints, static mount, `__main__` port scan
+- `API.md` — endpoint documentation; update when changing endpoints
+- `known_frequencies.json` — sole source of frequency metadata
+- `RadioNet/RadioNet.pth` — LFS model checkpoint (expects `checkpoint["model_state_dict"]`)
+- `frontend/src/` — `App.tsx` (routes), `components/Navbar.tsx`, `pages/{SignalClassification,UploadSignalImages,ManageImages,TypeViewer}.tsx`
+- `static/` — checked-in built frontend served by FastAPI
+- `tests/` — `conftest.py`, `test_api.py`, `tests.md` (docs), `lora.png` (classification fixture)
+- `test_images/`, `img/` — sample images and README screenshots
+- `utils/` — standalone scripts (see Gotchas)
+- `.github/copilot-instructions.md` — overlaps this file; keep both consistent
 
 ## Architecture
 
-- **Backend:** Single FastAPI app in `app.py`. Loads `RadioNetExtractor` (ResNet-34 via `timm`) and initializes ChromaDB (`classidyne_db/`) as module-level singletons at import time.
-- **Two vector collections:** `waterfall` and `fft`. Most endpoints accept a `collection` parameter restricted to those two values.
-- **Embedding pipeline:** Walks `datasets/waterfall/` and `datasets/fft/`, hashes each image (duplicate check is hash-based, not filename-based), extracts embeddings, upserts into ChromaDB. Runs as a background task via `/api/start-embedding`.
-- **Frequency data:** `known_frequencies.json` is the sole source of frequency metadata — not stored in or derived from the vector DB.
-- **Frontend:** React + MUI + React Router + React Query in `frontend/src/`. Communicates via relative `/api/...` fetches. No typed API client.
-- **Static serving:** `app.py` mounts `static/` as the root. Frontend changes require `npm run build` then copying `frontend/build/` into `static/` — they do NOT auto-update.
-
-## Tests
-
-- **Backend integration tests** live in `tests/`. They connect to the running server (default port 5000) and exercise the API over HTTP.
-- **Run with pytest:** `source venv/bin/activate && python -m pytest tests/ -v` (set `CLASSIDYNE_PORT` to override the default port).
-- **Run standalone:** `python tests/test_api.py --host localhost --port 5000` (no pytest required).
-- **Fixtures:** `tests/conftest.py` provides an `httpx.Client` fixture (`client`) wired to `http://localhost:<port>` with a 30 s timeout.
-- **Test image:** `tests/lora.png` is used for classification tests.
-- **What's covered:** stats, waterfall/fft type listing, classification (waterfall & fft), image lookup, frequency identification, and collage generation.
+- **Singletons at import time:** `CLIENT` (Chroma `PersistentClient("classidyne_db")`) and `EXTRACTOR` (`RadioNetExtractor`). Device is chosen cuda → mps → cpu. Paths (`./RadioNet/RadioNet.pth`, `datasets/...`, `known_frequencies.json`, `static`) are relative to the CWD, so run from the repo root.
+- **Two collections:** `waterfall` and `fft`, both created with cosine space (`hnsw:space`). Constants: `VALID_COLLECTIONS`, `WATERFALL_PATH`, `FFT_PATH`, `ACCEPTED_FILETYPES` (jpeg/jpg/png/gif/tiff/tif/bmp/webp).
+- **Embedding pipeline:** `embed_all_datasets()` runs as a FastAPI background task (`/api/start-embedding`) and walks waterfall then FFT. Each file is SHA-256 hashed; the hash is the Chroma ID and the duplicate key (not filename). Known hashes are fetched once up front; inserts are batched at 500. Metadata per item: `filepath`, `filehash`, `class` (= parent directory name). Global `embedding_status` (`EmbeddingStatus` enum) tracks progress; a new run is only accepted when `Idle` or `Fatal Error`.
+- **Classification:** `/api/classify` embeds the upload, queries top 20, converts cosine distance to similarity (`1 - distance`), keeps results ≥ `similarity_threshold` (default 0.5), tallies class counts into confidence percentages, attaches frequency ranges, and returns a base64 collage (5×4 grid of 150px tiles). The collage reads source images from `filepath`, so deleting dataset files breaks it (logged, skipped).
+- **Frequency data:** `known_frequencies.json` only — not in or derived from the vector DB. `/api/identify_frequency?freq=` takes Hz.
+- **Endpoints:** `POST /api/classify`, `POST /api/start-embedding`, `GET /api/stats`, `GET /api/find_image`, `DELETE /api/delete_image`, `GET /api/waterfall_types`, `GET /api/fft_types`, `GET /api/type_collage`, `GET /api/identify_frequency`. CORS is wide open (`*`).
+- **Frontend:** React 19 + MUI 7 (dark theme) + React Router 7 + React Query 5 + `react-easy-crop`, TypeScript, Create React App. Calls backend via relative `/api/...` fetches; no typed API client.
+- **Static serving:** `app.py` mounts `static/` at `/` last (after API routes). Frontend changes do not appear until built and copied into `static/`.
 
 ## Key Conventions
 
-- All API responses use `{"success": bool, "message": str, ...}` shape, even on errors with HTTP status codes. Preserve this.
-- Image lookup/delete uses a strict priority: exact Chroma ID/hash → exact filepath → partial basename match.
-- Classification preprocessing converts to grayscale then back to RGB (`convert("L").convert("RGB")`) — keep this aligned if modifying.
-- The virtualenv is named `venv-classidyne` (not `venv`). You must activate it before running the backend.
-- To reset the database, delete `classidyne_db/` before re-embedding. Deleting from the API does NOT remove the source file from `datasets/`.
-- **Test fixtures:** `tests/conftest.py` provides a `client` fixture that connects to `http://localhost:5000` (the running backend) for pytest. Update this port if the backend runs elsewhere.
+- All API responses use `{"success": bool, "message": str, ...}`, even on errors with HTTP status codes (400 bad input, 404 not found, 409 ambiguous, 500 failure). Preserve this.
+- Endpoints taking `collection` must validate against `VALID_COLLECTIONS` (guards invalid queries and path traversal).
+- Image lookup/delete (`find_image`, `delete_image`) share `_resolve_identifier_candidates` with strict priority: exact Chroma ID/hash → exact filepath → partial basename match. Multiple matches on delete return 409 with a `matches` list.
+- Classification and embedding preprocessing convert to grayscale then back to RGB (`convert("L").convert("RGB")`) and L2-normalize embeddings. Keep query and indexed preprocessing identical.
+- Deleting via the API removes the Chroma entry only; the file stays in `datasets/`, and re-embedding will re-add it. To reset the DB, delete `classidyne_db/` and re-embed.
+- Existing code uses `# FIX:` comments for past bug-fix rationale; keep comments sparse and match surrounding style.
+
+## Tests
+
+- Backend tests are integration tests over HTTP against a live server — start `python app.py` first (embedded dataset required for meaningful classification results).
+- `tests/conftest.py` provides the `client` fixture (`httpx.Client`, 30 s timeout, base URL `http://localhost:${CLASSIDYNE_PORT:-5000}`). Update it if the backend runs elsewhere.
+- Covered: stats, waterfall/fft types, classify (waterfall & fft, using `tests/lora.png`), find_image, identify_frequency, type_collage. Not covered: delete_image, start-embedding.
+- Frontend: `src/App.test.tsx` is the unmodified CRA stub and is not a trustworthy product test; Jest currently fails resolving `react-router-dom` from `App.tsx`.
+
+## Gotchas
+
+- Venv naming is inconsistent: setup docs use `venv-classidyne`, while `tests/tests.md` references `venv`. Either works; just activate one that has `requirements.txt` installed.
+- `utils/transform.py` **renames every file** under `./datasets` to its MD5 hash, and `utils/remove-corrupted-images.py` **deletes** corrupted images. Both run on import/execute with hardcoded paths and no confirmation — don't run them casually. Renaming changes `filepath`, so re-embed afterward.
+- `requirements.txt` is unpinned and omits `torchvision` (imported by `app.py`; normally pulled in alongside `timm`/`torch` installs — verify if imports fail). It also includes `httpx` for tests.
