@@ -171,3 +171,6 @@ datasets/
 # Dataset v3 scratch (large / machine-specific)
 tmp/
 
+
+# Dataset tools: compiled helper
+dataset_tools/capture/winlist

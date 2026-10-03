@@ -14,7 +14,7 @@
 ## High-level architecture
 
 - The backend is a single FastAPI app in `app.py`. It owns model loading, ChromaDB access, embedding jobs, image lookup/delete APIs, and the classification API.
-- `RadioNetExtractor` loads `./RadioNet/RadioNet.pth` at import time and is kept as a module-level singleton. `CLIENT` is also initialized once as a persistent Chroma client rooted at `classidyne_db/`.
+- `RadioNetExtractor` loads `./RadioNet/RadioNet.pth` (or `$CLASSIDYNE_MODEL`) at import time and is kept as a module-level singleton. The checkpoint's `arch` / `preprocess` keys select the timm architecture (v3: `efficientnet_b0`) and whole-frame 224×224 preprocessing. `CLIENT` is also initialized once as a persistent Chroma client rooted at `classidyne_db/`.
 - The vector store is split into two collections, `waterfall` and `fft`. Most backend behavior mirrors that split: embedding, stats, type listing, type collage, and classification all work against one or both of those collections.
 - Dataset ingestion is filesystem-driven. The backend walks `datasets/waterfall/<signal-type>/` and `datasets/fft/<signal-type>/`, hashes each image, skips duplicates by hash, extracts embeddings, and writes metadata containing `filepath`, `filehash`, and `class`.
 - Frequency metadata is not inferred from embeddings; it comes from `known_frequencies.json` and is attached when returning classification results.
@@ -27,6 +27,7 @@
 - The app expects the first real workflow to be embedding the dataset into ChromaDB. A fresh checkout is not usable for classification until the image database has been built.
 - Backend responses consistently return JSON objects with `success` and `message`, even for many error cases that also set HTTP status codes. Preserve that response shape when extending endpoints.
 - Image management resolves identifiers with a strict priority: exact Chroma ID/file hash first, exact filepath second, partial basename/path match last. `find_image` and `delete_image` share that behavior.
-- Classification works on grayscale-converted images but still feeds the model RGB tensors (`convert("L").convert("RGB")`). Keep preprocessing aligned with that flow.
+- Classification works on grayscale-converted images but still feeds the model RGB tensors. v3 checkpoints squash the whole frame to 224×224 exactly as `dataset_tools/train/common.py` does in training; keep query, indexed and training preprocessing aligned, and re-embed after any model change.
+- The waterfall dataset (v3) is built, curated and trained with `dataset_tools/`; see `docs/DATASET_GUIDE.md`.
 - The duplicate check during embedding is hash-based, not filename-based. Utility scripts in `utils/` also assume the dataset tree under `./datasets` is the source of truth.
 - The current frontend test harness is still in CRA/Jest form and the checked-in `src/App.test.tsx` is not a trustworthy product test; test runs currently fail in Jest while resolving `react-router-dom` from `App.tsx`.

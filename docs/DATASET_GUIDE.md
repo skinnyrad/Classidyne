@@ -1,6 +1,6 @@
 # Building a Classidyne Waterfall Dataset
 
-This guide walks through building the Classidyne v3 waterfall dataset, and is written so you can repeat the process. It covers:
+This guide walks through building the Classidyne v3 waterfall dataset (24 classes, 4,051 images), and is written so you can repeat the process. It covers:
 
 - generating signals with NumPy;
 - transmitting them with a HackRF;
@@ -10,7 +10,7 @@ This guide walks through building the Classidyne v3 waterfall dataset, and is wr
 - balancing the classes;
 - training and evaluating RadioNet.
 
-The tooling lives in `tmp/` (see [File map](#15-file-map)). Paths below are relative to the repo root unless noted otherwise.
+The tooling lives in `dataset_tools/`; large, machine-specific intermediates go to the git-ignored `tmp/dataset/` (see [File map](#15-file-map)). Paths below are relative to the repo root unless noted otherwise. For a summary of the dataset itself (contents, class changes, model results, merge checklist), see [DATASET_V3.md](DATASET_V3.md).
 
 > **TL;DR pipeline**
 >
@@ -55,7 +55,7 @@ The v2 Kaggle dataset (`halcy0nic/radio-frequecy-rf-signal-image-classification`
 | Problem | Evidence | Fix in v3 |
 |---|---|---|
 | **Severe imbalance** | 5 images (2ASK, 4FSK, drone-video) vs. 737 (fm), about 147× | Synthesize the rare classes on the bench and cap each class at ~150 |
-| **The class could be guessed from presentation** | Each class came mostly from one capture session with its own colormap, software and screenshot size (e.g. 273/299 `packet` images were 945×468 in a yellow palette) | One capture tool (SDR++), one colormap (Classic), one crop rule; legacy images capped per session |
+| **The class could be guessed from presentation** | Each class came mostly from one capture session with its own colormap, software and screenshot size (e.g. 273/299 `packet` images were 945×468 in a yellow palette) | One capture tool (SDR++), one crop rule, randomized display settings; mostly Classic, plus ~20 high-res captures per class spread over the 13 other SDR++ colormaps; legacy images capped per session |
 | **Near-duplicates** | Consecutive screenshots of the same transmission | Perceptual-hash dedup, plus **group-held-out** evaluation so frames of one transmission never sit in both train and test |
 | **Data quality** | `unknown` class, UI chrome in screenshots, `.DS_Store`, classes with fewer than 10 images | Drop `unknown`, trim UI borders, quality filters, label checks on live captures |
 
@@ -69,7 +69,7 @@ Third-party notebooks reported about 98% accuracy and per-class F1 = 1.0 on v2. 
 |---|---|---|
 | **HackRF One** (firmware 2.4.0) | Transmitter for bench signals; receiver (up to 20 MS/s) for wideband live captures | `brew install hackrf` |
 | **RTL-SDR Blog V4** | Receiver for bench captures and narrow off-air signals | about 500 kHz–1.766 GHz, up to 2.4 MS/s usable |
-| **ESP32 dev board** (CP2102, `/dev/cu.usbserial-0001`) | Real Wi-Fi and BLE traffic source | Flashed with `tmp/esp32_traffic` |
+| **ESP32 dev board** (CP2102, `/dev/cu.usbserial-0001`) | Real Wi-Fi and BLE traffic source | Flashed with `dataset_tools/esp32_traffic` |
 | **SDR++** 1.3.0 (`/Applications/SDR++.app`) | Renders every waterfall | Config in `~/Library/Application Support/sdrpp/` |
 | Python 3.14 venv `venv-classidyne` | numpy, scipy, pillow, torch, timm, pyserial | `pip install -r requirements.txt pyserial` |
 | `arduino-cli` + `esp32:esp32` core 3.3.11 | ESP32 build and flash | |
@@ -89,7 +89,7 @@ Antennas: a short antenna on each radio, about 1 m apart on the bench. The HackR
 4. **Build the window helper:**
 
    ```bash
-   cd tmp/capture && swiftc -O winlist.swift -o winlist
+   cd dataset_tools/capture && swiftc -O winlist.swift -o winlist
    ```
 
    `winlist` prints `<windowID> x y w h` for the largest SDR++ window, using CoreGraphics.
@@ -105,7 +105,7 @@ Antennas: a short antenna on each radio, about 1 m apart on the bench. The HackR
 
 ## 4. RF safety and legality
 
-These rules are enforced in code (`tmp/capture/run_capture.py`) as well as by convention.
+These rules are enforced in code (`dataset_tools/capture/run_capture.py`) as well as by convention.
 
 - **Transmit only inside ISM bands:**
   - **433.05–434.79 MHz:** quiet here, but only 1.74 MHz wide.
@@ -127,7 +127,7 @@ These rules are enforced in code (`tmp/capture/run_capture.py`) as well as by co
 
 ## 5. Generating signals with NumPy
 
-All generators are in **`tmp/gen/signals.py`**. They build on the approach in *Generating Signals with NumPy* (`aft-rfctf/tmp/generating-signals-with-numpy/article.md`) and the helpers in `aft-rfctf/iq_recordings/iqlib.py`, which is copied to `tmp/gen/iqlib.py`.
+All generators are in **`dataset_tools/gen/signals.py`**. They build on the approach in *Generating Signals with NumPy* (`aft-rfctf/tmp/generating-signals-with-numpy/article.md`) and the helpers in `aft-rfctf/iq_recordings/iqlib.py`, which is copied to `dataset_tools/gen/iqlib.py`.
 
 ### 5.1 The contract
 
@@ -142,7 +142,7 @@ def gen_<class>(rng, fs, dur) -> (iq: complex64 ndarray at baseband (0 Hz), meta
 
 `GENERATORS` maps sub-type to function. `CLASS_OF` and `SUBTYPES` map sub-types onto dataset classes:
 
-- `morse` and `remote-keyless-entry` → `on-off-keying`
+- `morse` and `remote-keyless-entry` → `OOK`
 - `BPSK`, `QPSK`, `8PSK`, `16QAM`, `32QAM` → `psk-qam`
 
 ### 5.2 Shaping rules (the difference between "looks synthetic" and "looks real")
@@ -157,8 +157,9 @@ def gen_<class>(rng, fs, dur) -> (iq: complex64 ndarray at baseband (0 Hz), meta
 
 | Class | Model (parameters randomized per variant) |
 |---|---|
-| on-off-keying | Three sub-types:<br>• OOK packets: preamble + sync + random payload, 300 b/s–8 kb/s, optional Manchester, 2–5 repeats<br>• Morse: 8–30 WPM, random text<br>• Keyfob PWM-OOK: KeeLoq-style preamble + 66-bit word, 3–7 repeats |
+| OOK | Three sub-types:<br>• OOK packets: preamble + sync + random payload, 300 b/s–8 kb/s, optional Manchester, 2–5 repeats<br>• Morse: 8–30 WPM, random text<br>• Keyfob PWM-OOK: KeeLoq-style preamble + 66-bit word, 3–7 repeats |
 | 2ASK | Two-level ASK, 1–50 kBd, low level 0–0.4, continuous or bursty |
+| 2FSK | Binary CPFSK, 100 b/s–38.4 kb/s (low rates favoured), deviation 3–60 kHz, optional Gaussian BT 0.5/1.0; continuous telemetry, sensor packets (preamble + sync + payload) or keyfob words repeated 3–7× |
 | 4FSK | CPFSK ±1/±3, 1.2–19.2 kBd, optional Gaussian |
 | psk-qam | BPSK / QPSK / 8PSK / 16QAM / 32QAM (cross), 25–500 kBd, RRC β 0.2–0.5, continuous or bursty |
 | am | Broadcast AM (music/speech, 4.5–9 kHz audio, depth 0.4–0.95) |
@@ -182,7 +183,7 @@ def gen_<class>(rng, fs, dur) -> (iq: complex64 ndarray at baseband (0 Hz), meta
 Check generators offline before going on air:
 
 ```bash
-cd tmp/gen && python preview.py            # -> tmp/eval/preview/<class>.png + _contact.png
+cd dataset_tools/gen && python preview.py            # -> tmp/dataset/preview/<class>.png + _contact.png
 ```
 
 ---
@@ -208,13 +209,13 @@ cd tmp/gen && python preview.py            # -> tmp/eval/preview/<class>.png + _
 hackrf_transfer -t sig.cs8 -f <LO Hz> -s <tx_fs> -x <0-30> -a 0 -R
 ```
 
-Files are generated just before each transmission and deleted right after (`tmp/iq/` stays small). Each one covers about 1.2 screens of signal, 2–14 s, and `-R` loops it.
+Files are generated just before each transmission and deleted right after (`tmp/dataset/iq/` stays small). Each one covers about 1.2 screens of signal, 2–14 s, and `-R` loops it.
 
 ---
 
 ## 7. Driving SDR++ without a mouse
 
-SDR++ reads display settings only at startup. The control layer (`tmp/capture/sdrpp_ctl.py`) therefore uses a **restart-to-reconfigure** pattern, with **rigctl** for runtime control.
+SDR++ reads display settings only at startup. The control layer (`dataset_tools/capture/sdrpp_ctl.py`) therefore uses a **restart-to-reconfigure** pattern, with **rigctl** for runtime control.
 
 ### 7.1 Restart with a profile
 
@@ -257,7 +258,7 @@ Disabling the Radio module removes the VFO entirely, which also keeps its grey o
 
 ## 8. Calibration
 
-All values live in `tmp/capture/calibration.json`.
+All values live in `dataset_tools/capture/calibration.json`.
 
 ### 8.1 Waterfall scroll speed (how many seconds one screen shows)
 
@@ -309,7 +310,7 @@ The goal is the reference SDR++ look: dark-navy noise with visible texture.
 
 ### 9.1 One session (`run_capture.run_class`)
 
-1. **Pick a sub-type and profile** (`tmp/capture/profiles.py`):
+1. **Pick a sub-type and profile** (`dataset_tools/capture/profiles.py`):
    - RTL gain, FFT size and frame rate suited to the signal's timescale (slow modes 30–150 fps; bursty modes up to 3000 fps with small FFTs).
    - **40% of sessions are high-res**: 65536 @ 500–750, 32768 @ 1000–1500, or 16384 @ 2000–3000.
    - About 15% of those deliberately use over-limit settings (32k/65k @ 1–3k fps, "as a user would set it"), flagged `overloaded`.
@@ -339,38 +340,55 @@ The goal is the reference SDR++ look: dark-navy noise with visible texture.
 - stopping at any point leaves the classes balanced.
 
 ```bash
-cd tmp/capture
+cd dataset_tools/capture
 caffeinate -dims ../../venv-classidyne/bin/python run_full.py --hours 1.9   # repeat until "all classes at target"
 python run_capture.py QPSK --sessions 4      # force a sub-type into its class
 ```
 
 About 70–180 s per session. Roughly 2,300 bench images took about 12 hours.
 
-### 9.3 Manifest schema (`tmp/manifest.csv`)
+### 9.3 Manifest schema (`dataset_tools/manifest.csv`)
 
 | Column | Meaning |
 |---|---|
-| `file` | `datasets/waterfall/<class>/<sha256>.png` (relative to `tmp/`) |
+| `file` | `datasets/waterfall/<class>/<sha256>.png` (relative to the repo root) |
 | `class` | dataset label |
 | `source` | `synthetic` (bench), `real-old` (curated legacy), `real-ota` (live receive-only) |
 | `group_id` | capture group: one TX variant, one legacy screenshot session, or one live centre frequency. **Used for leak-free splits.** |
 | `session` | capture session (one SDR++ configuration) |
 | `rtl_center_hz`, `offset_hz`, `span_hz`, `decimation` | tuning and zoom |
 | `fft_size`, `fft_rate`, `rtl_gain`, `tx_gain`, `min_db`, `max_db`, `tx_fs` | SDR++/radio settings |
+| `colormap` | SDR++ colormap the frame was rendered in (`Classic`, `Turbo`, ...); empty for legacy images from other tools |
 | `params` | JSON: `subtype`, `hires`, `overloaded`, `obw_hz`, plus every generator parameter, or legacy/live details |
+
+### 9.4 Captures in other colormaps
+
+Most images are rendered in SDR++'s **Classic** colormap. Grayscale conversion (which `app.py` applies) does **not** make the colormap irrelevant: most SDR++ maps are not monotonic in brightness. Classic runs dark blue → white → yellow → red → dark red, so the strongest signals turn *dark* in grayscale, while Viridis or Inferno turn them bright.
+
+Two complementary fixes:
+
+1. **Capture in other colormaps.** `run_capture.py --colormap <name>|random` and `run_live.py --colormap random` set SDR++'s `colorMap` for the session and log it in the `colormap` column. The level/signal metrics (auto-level, signal score, saturation) are tuned for Classic, so frames in other maps are first mapped back to signal level and re-rendered in Classic before measuring (`run_capture.as_classic`).
+
+   ```bash
+   # ~20 hi-res images per class, a different non-Classic colormap each session
+   python dataset_tools/capture/run_full.py --colormap random --hires --target 20 --variants 3 --frames 1
+   python dataset_tools/capture/run_live.py wifi-esp32 --frames 20 --colormap random --hires
+   ```
+
+2. **Colormap round-trip augmentation** at training time (`dataset_tools/gen/colormaps.py`, `train.py --cmap-aug`). SDR++ interpolates each map's colour stops linearly, so a 256-entry LUT reproduces it exactly. Every SDR++-rendered image is inverted to its colormap index ("signal level") and re-coloured with a random SDR++ map before the usual grayscale step. The LUTs are read from `/Applications/SDR++.app/Contents/Resources/colormaps/` (override with `SDRPP_COLORMAPS`).
 
 ---
 
 ## 10. Live captures
 
-These are receive-only, in `tmp/capture/run_live.py`; `live_all.sh` runs the suite. Each target entry is `(class, source, centre list, spans, frame-rate range, FFT sizes, ESP32 mode)`.
+These are receive-only, in `dataset_tools/capture/run_live.py`; `live_all.sh` runs the suite. Each target entry is `(class, source, centre list, spans, frame-rate range, FFT sizes, ESP32 mode)`.
 
-### 10.1 ESP32 traffic generator (`tmp/esp32_traffic/esp32_traffic.ino`)
+### 10.1 ESP32 traffic generator (`dataset_tools/esp32_traffic/esp32_traffic.ino`)
 
 Flash it:
 
 ```bash
-cd tmp/esp32_traffic
+cd dataset_tools/esp32_traffic
 arduino-cli compile --fqbn esp32:esp32:esp32:PartitionScheme=min_spiffs .
 arduino-cli upload  -p /dev/cu.usbserial-0001 --fqbn esp32:esp32:esp32:PartitionScheme=min_spiffs .
 ```
@@ -411,19 +429,19 @@ Targets were FM (88.5–107.5 MHz), airband, ADS-B 1090, AIS 162, pagers and VOR
 - AIS, pager and ADS-B had no traffic.
 - Re-run these with an outdoor antenna.
 
-### 10.4 Label checks for live data (`tmp/curate/occupancy.py`)
+### 10.4 Label checks for live data (`dataset_tools/curate/occupancy.py`)
 
 Live frames pass a signal-score check, but a DC spike or one spur can fool it. So:
 - **Wideband occupancy:** the fraction of frequency columns more than 12 levels above the noise floor, after a 5-column smoothing so single spurs don't count. Empty frames score about 0.01; real LTE, ATSC and Wi-Fi score 0.08–0.94. Threshold: 0.05.
-- **Visual review of every group** with `tmp/eval/contact.py`, which is how the airband/VOR images, the 891/742.5/1188 MHz "HDMI" groups and the mixed bluetooth groups were caught.
+- **Visual review of every group** with `dataset_tools/eval/contact.py`, which is how the airband/VOR images, the 891/742.5/1188 MHz "HDMI" groups and the mixed bluetooth groups were caught.
 
-Rejected frames move to `tmp/_live_rejected/<reason>/`. Nothing is deleted.
+Rejected frames move to `tmp/dataset/_live_rejected/<reason>/`. Nothing is deleted.
 
 ---
 
 ## 11. Curating the legacy dataset
 
-`tmp/curate/curate_existing.py` imports the useful v2 images as `source=real-old`:
+`dataset_tools/curate/curate_existing.py` imports the useful v2 images as `source=real-old`:
 
 1. Drop `unknown`, hidden files and corrupt images.
 2. Trim flat UI borders (near-constant edge rows/columns).
@@ -434,7 +452,7 @@ Rejected frames move to `tmp/_live_rejected/<reason>/`. Nothing is deleted.
 
 Result: 1,115 of 3,996 legacy images kept. 988 remain after class merges and balancing.
 
-`tmp/curate/merge_classes.py` relabels files and manifest rows for class merges. It keeps the old label as `params.subtype`, re-caps merged legacy images, and writes `known_frequencies.proposed.json`.
+`dataset_tools/curate/merge_classes.py` relabels files and manifest rows for class merges. It keeps the old label as `params.subtype`, re-caps merged legacy images, and writes `known_frequencies.proposed.json`.
 
 ---
 
@@ -442,53 +460,53 @@ Result: 1,115 of 3,996 legacy images kept. 988 remain after class merges and bal
 
 **Merges** (decided with the dataset owner):
 
-- **`morse` + `remote-keyless-entry` → `on-off-keying`.** All three are on/off keyed carriers. The keyfob 2FSK variant was dropped because it isn't OOK.
+- **`morse` + `remote-keyless-entry` → `OOK`** (the v2 `on-off-keying` class, renamed). All three are on/off keyed carriers. The keyfob 2FSK variant isn't OOK; FSK keyfobs are a sub-kind of the new `2FSK` class.
+- **New `2FSK` class** (152 bench images + colormap captures): continuous telemetry, ISM sensor packets (preamble + sync + payload) and FSK keyfob words; 100 b/s–38.4 kb/s, deviation 3–60 kHz, optional Gaussian shaping. Low rates are favoured so the tone switching stays visible on fast, high-resolution waterfalls, and 70% of its sessions use the hi-res look (`HIRES_P` in `profiles.py`), matching a 32k-FFT / 3000 fps SDR++ reference screenshot.
 - **`8PSK` + `16QAM` + `32QAM` (+ new BPSK, QPSK) → `psk-qam`.** A waterfall can't separate constellations. RRC-shaped linear modulations occupy `Rs·(1+β)` whatever the constellation. Before the merge, held-out recall was 0.02–0.25 with the classes confused with each other.
 
-**Balancing** (`tmp/curate/balance.py`):
+**Balancing** (`dataset_tools/curate/balance.py`):
 - Cap each class at 150.
 - Keep **all** live captures.
 - Trim the rest one image at a time from the largest (sub-type, capture group) bucket, so sub-types and sessions stay even. For example, `psk-qam` ends up with 24–32 images of each modulation.
-- Move overflow to `tmp/_balanced_out/`.
+- Move overflow to `tmp/dataset/_balanced_out/`.
 
-**Known gaps** (need real hardware or captures from other people):
-
-| Class | Images | Why |
-|---|---|---|
-| drone-video / uav-video | 5 / 6 | Analog 5.8 GHz FPV needs a real transmitter |
-| hdmi | 29 | Live TMDS leakage |
-| atsc | 67 | 18 legacy + 49 live |
-| bluetooth | 120 | 60 legacy + 60 clean live BLE |
+**Removed for v3 (planned for v3.5):** drone-video (5), uav-video (6), hdmi (29) and atsc (67). They're too thin to train or test reliably.
+- Their images were deleted from v3.
+- To bring a class back:
+  1. Capture it again: `run_live.py atsc-ota` / `hdmi-leak` for live ATSC and HDMI leakage, an FPV transmitter for the video classes, and the old v2 images via `curate_existing.py`.
+  2. Re-run `balance.py`, then `train.py --resplit`.
 
 ---
 
 ## 13. Training and evaluating RadioNet
 
-All code is in `tmp/train/`.
+All code is in `dataset_tools/train/`.
 
 ### 13.1 Splits that measure generalization, not memory
 
 `make_splits()` assigns whole **capture groups** to train, val or test (about 70/15/15 per class). Frames of one transmission, one legacy screenshot session or one live centre frequency are never on both sides. This is the most important difference from the v2 notebooks, whose random per-image splits put near-identical frames in both train and test.
 
+`--extend-split` keeps the assignment of every group already in `splits.csv` and only places new groups. Use it when adding data, so a model trained on the old split can still be compared fairly on the new test set (none of its training images moves into test).
+
 ### 13.2 Preprocessing finding
 
-`app.py` uses timm's eval transform: resize the short side to 256, then **centre-crop 224×224**. On a wide waterfall (2747×1191) that throws away the outer 62% of the frequency span. Every evaluation is run both ways:
-- `app`: the current centre-crop;
-- `full`: the whole image squashed to 224×224.
+The v2 `app.py` used timm's eval transform: resize the short side to 256, then **centre-crop 224×224**. On a wide waterfall (2747×1191) that throws away the outer 62% of the frequency span. `evaluate.py` measures both:
+- `app`: the old centre-crop;
+- `full`: the whole image squashed to 224×224 (640 px LANCZOS thumbnail, then bicubic resize). This is what training and the v3 `app.py` use.
 
 ### 13.3 Training (`train.py`)
 
 | Setting | Value |
 |---|---|
-| Starting weights | `--init imagenet` (timm `resnet34.a1_in1k`), `radionet` (current checkpoint) or `scratch` |
-| Architectures | `--arch resnet34` (drop-in for `app.py`, 512-d) or `efficientnet_b0` (1280-d) |
+| Starting weights | `--init imagenet` (timm ImageNet weights), `radionet` (v2 checkpoint) or `scratch` |
+| Architectures | `--arch efficientnet_b0` (v3, 1280-d) or `resnet34` (512-d) |
 | Input | Grayscale → RGB, as in `app.py` |
-| Augmentation | RandomResizedCrop (time/frequency crops, scale 0.35–1, ratio 0.4–2.5), brightness/contrast jitter, random gamma |
+| Augmentation | RandomResizedCrop (time/frequency crops, scale 0.35–1, ratio 0.4–2.5), brightness/contrast jitter, random gamma; `--cmap-aug 0.5`: half the SDR++-rendered images are re-coloured with a random SDR++ colormap before the grayscale step (§9.4) |
 | Excluded augmentations | **No flips or rotations.** A horizontal flip swaps USB/LSB and turns LoRa up-chirps into down-chirps; a vertical flip reverses time |
 | Class balance | `WeightedRandomSampler` (1/class count) |
 | Loss | Cross-entropy with label smoothing 0.1; optional `--supcon 0.5` (supervised contrastive loss on L2-normalised embeddings, which suits Classidyne's cosine kNN) |
-| Optimiser | AdamW, OneCycle LR (backbone 3e-4, head 3e-3), 30 epochs; best checkpoint by validation macro-F1 |
-| Outputs | `models/RadioNet_<tag>.pth` (backbone only, `{"model_state_dict": ...}`, same format `app.py` loads) and `*_with_head.pth` |
+| Optimiser | AdamW, OneCycle LR (backbone 3e-4, head 3e-3), 25 epochs; best checkpoint by validation macro-F1 |
+| Outputs | `tmp/dataset/models/RadioNet_<tag>.pth` (backbone + `arch`, `preprocess`, `classes`: the format `app.py` loads) and `*_with_head.pth` |
 
 ### 13.4 Evaluation (`evaluate.py`)
 
@@ -498,32 +516,49 @@ For each model × preprocessing, on the held-out test groups:
 - **Classifier head** accuracy and macro-F1, per-class recall, and confusion-matrix PNGs.
 - **Domain shift:** models trained on **synthetic only** (`--train-source synthetic`), then tested on real images (legacy and live) with a synthetic gallery.
 - **Style-leak baseline:** kNN on size/aspect/mean colour only. Lower is better: it measures how much the label can be guessed without looking at the signal.
+- **Colormap shift** (`--cmap-shift`): every SDR++-rendered test image re-rendered in all 14 SDR++ colormaps; plus a row for the real test captures made in non-Classic colormaps.
 
 ```bash
-cd tmp/train
-python train.py --init imagenet --arch efficientnet_b0 --supcon 0.5 --epochs 30 --tag final_effb0_imagenet_supcon
-python evaluate.py --v3 models/*final*_with_head.pth --domain-shift models/*synonly*_with_head.pth --out report_final.md
+cd dataset_tools/train
+python train.py --arch efficientnet_b0 --supcon 0.5 --cmap-aug 0.5 --extend-split --tag v3_final
+python evaluate.py --v3 ../../tmp/dataset/models/RadioNet_v3_final_with_head.pth --cmap-shift \
+                   --out ../../tmp/dataset/reports/report_final.md
 ```
 
-Results are in `tmp/train/report_final.md`, summarised in `tmp/README.md`. The v3 run (2026-10-03, 569 held-out test images, 27 classes), Classidyne kNN macro-F1:
+`dataset_tools/eval/app_eval.py` then evaluates the deployed app end to end (live vector DB, `/api/classify` voting rule, HTTP latency); see [APP_EVALUATION.md](APP_EVALUATION.md).
 
-| Model | Centre-crop (current app) | Whole image |
+Results of the v3 runs (2026-10-03, 24 classes; full tables in `tmp/dataset/reports/`, summary in [DATASET_V3.md](DATASET_V3.md)).
+
+Model selection, first 24-class round (571 held-out images, Classidyne kNN macro-F1, whole frame):
+
+| Model | Classic test images | Mean over all 14 SDR++ colormaps |
 |---|---|---|
-| RadioNet (current) | 0.55 | 0.58 |
-| ResNet-34 + SupCon (ImageNet start) | 0.66 | 0.80 |
-| **EfficientNet-B0 + SupCon (ImageNet start)** | 0.75 | **0.86** (head: 0.91) |
-| ResNet-34 from scratch (prelim) | — | 0.47 |
+| RadioNet v2 (ResNet-34) | 0.58 | 0.40 |
+| EfficientNet-B0 + SupCon | 0.84 | 0.71 |
+| EfficientNet-B0 + SupCon + colormap augmentation | 0.85 | 0.86 |
+
+Final (630 held-out images, after the colormap captures):
+
+| Model | kNN macro-F1 | Real captures in other colormaps | Colormap mean |
+|---|---|---|---|
+| RadioNet v2 | 0.57 | 0.28 | 0.37 |
+| EfficientNet-B0 + SupCon + cmap-aug, 224×224 | 0.83 | 0.62 | 0.81 |
+| **same, 448×224 input (deployed)** | **0.87** | **0.64** | **0.84** |
+
+Earlier 27-class experiments (2026-10-03, same protocol) ranked the alternatives: ResNet-34 + SupCon (ImageNet start) 0.80, ResNet-34 from the v2 RadioNet weights 0.78, EfficientNet-B0 without SupCon 0.79, ResNet-34 from scratch 0.47.
 
 Lessons:
 - **ImageNet start beats training from scratch** at this dataset size.
 - **Whole-image preprocessing beats the centre-crop** for every model.
+- **Wide input for wide waterfalls.** At 224 px, narrow signals in a 1–2.4 MHz span shrink to a few pixels: high-res frames with < 3% occupancy were 37% correct vs 93% for the rest. 448×224 lifted 2FSK from 0.31 to 0.73.
+- **Colormap augmentation is nearly free robustness**; real captures in other colormaps add more.
 - **Bench-only training transfers poorly to other tools' screenshots** (style gap), so keep mixing in real captures.
 
 ### 13.5 Using a new model in Classidyne
 
-- **ResNet-34:** copy `RadioNet_<tag>.pth` over `RadioNet/RadioNet.pth` (Git LFS). Delete `classidyne_db/` and re-embed.
-- **EfficientNet-B0:** also change `timm.create_model("resnet34", ...)` in `app.RadioNetExtractor` to `"efficientnet_b0"`. Embeddings become 1280-d, so the Chroma collections must be rebuilt.
-- **Recommended preprocessing change:** replace the centre-crop transform with a whole-image resize to 224×224. It's worth +0.06 to +0.12 macro-F1 even with the old model.
+1. Copy `tmp/dataset/models/RadioNet_<tag>.pth` over `RadioNet/RadioNet.pth` (Git LFS). The checkpoint stores `arch`, `preprocess` and `input_size`; `app.RadioNetExtractor` reads them, so no code change is needed. (`CLASSIDYNE_MODEL=<path>` tries a checkpoint without copying.)
+2. Delete `classidyne_db/` and re-embed (`POST /api/start-embedding`): embeddings from different models are not comparable.
+3. Run `python -m pytest tests/` and `python dataset_tools/eval/app_eval.py` against the running server.
 
 ---
 
@@ -549,57 +584,60 @@ Lessons:
 | Orphan `hackrf_transfer` after a kill | `-R` loops forever | atexit/signal handlers + `pkill -INT -x hackrf_transfer` |
 | `rm -rf` of a dataset folder blocked | Safety check on glob deletes | Move to an `_archive` folder instead |
 | zsh `$P` "command not found" | zsh doesn't word-split variables | Use `PY=...; $PY script.py` with a single word |
+| Live Wi-Fi in hi-res mode barely visible | A 2–4 ms FFT window dilutes sub-ms bursts; with a 30–45 dB range they only reach the bottom of the colormap | Hi-res HackRF captures use a 20–30 dB range |
+| Captures in GQRX / Inferno look almost black | Those maps start at black; weak signals stay dark | Expected look; frames whose re-rendered signal score is < 25 are archived (`tmp/dataset/_faint_colormap/`) |
+| `/api/classify` took ~1.5 s | Collage decoded 20 full-resolution PNGs serially | Parallel decode (`TILE_POOL`): ~0.36 s |
+| Port 5000 busy on macOS | AirPlay Receiver | The app picks 5001; set `CLASSIDYNE_PORT=5001` for tests |
 
 ---
 
 ## 15. File map
 
 ```
-tmp/
-  README.md                       dataset v3 summary, numbers, merge instructions
+dataset_tools/                    (tracked)
+  README.md                       quick reference
+  paths.py                        shared locations (repo root, manifest, splits, scratch)
   manifest.csv                    one row per image (schema §9.3)
-  datasets/waterfall/<class>/     the dataset (PNG, sha256 names)
+  splits.csv                      reference group-held-out train/val/test split
   gen/        signals.py          all generators (+ CLASS_OF / SUBTYPES)
               iqlib.py            DSP helpers (from aft-rfctf)
+              colormaps.py        SDR++ colormap LUTs, inverse map, re-colouring
               preview.py          offline spectrogram check
   capture/    sdrpp_ctl.py        SDR++ config/restart/rigctl/screenshot control
               run_capture.py      bench capture loop, TX safety, calibration, auto-level
-              run_full.py         resumable balanced round-robin driver
+              run_full.py         resumable balanced round-robin driver (+ colormap top-ups)
               profiles.py         per-class display profiles + hi-res mode
               run_live.py         receive-only live targets (HackRF / RTL / ESP32)
               live_all.sh         live suite
-              winlist.swift       window id helper (CoreGraphics)
-              calibration.json    crop box, px/line, frequency error, level cache
+              winlist.swift       window id helper (CoreGraphics; build to capture/winlist)
+              calibration.json    crop box, px/line, frequency error, level cache (machine-specific)
   esp32_traffic/esp32_traffic.ino Wi-Fi/BLE traffic generator firmware
   curate/     curate_existing.py  legacy import (dedup, borders, quality, caps)
-              merge_classes.py    class merges (+ known_frequencies.proposed.json)
+              merge_classes.py    class merges
               occupancy.py        wideband label check for live frames
               balance.py          cap classes at 150, diversity-preserving
-  train/      common.py           splits, cache, model, preprocessing (app vs full)
-              train.py            fine-tuning / training
+  train/      common.py           splits, caches, model, preprocessing (app vs full)
+              train.py            training
               evaluate.py         model comparison report + confusion PNGs
-  eval/       contact.py          contact sheets for visual review
-              eval_knn.py         quick kNN check on any folder (used for the v2 baseline)
-  backups/sdrpp/                  original SDR++ config (restore when done)
-  _*/                             archived frames (rejected, overflow, pilots), nothing deleted
+  eval/       app_eval.py         end-to-end evaluation of the running app
+              contact.py          contact sheets for visual review
+datasets/waterfall/<class>/       the dataset (PNG, sha256 names; git-ignored)
+tmp/dataset/                      scratch (git-ignored): iq/, models/, reports/, logs/, train_cache/,
+                                  _*/ archived frames (rejected, overflow, pilots) - nothing deleted
+tmp/backups/                      SDR++ config, v2 waterfall dataset, v2 RadioNet.pth, v2 vector DB
 ```
 
 ---
 
 ## 16. Merging and publishing
 
-1. Review `tmp/datasets/waterfall/` and `tmp/manifest.csv`. Sample class sheets:
+The v3 merge was done like this (repeat it for a future version):
 
-   ```bash
-   python tmp/eval/contact.py out.png <class>
-   ```
-
-2. Move `datasets/` aside as `datasets_v2/`. Copy `tmp/datasets/waterfall` to `datasets/waterfall` and keep `tmp/manifest.csv` next to it.
-3. Apply `tmp/curate/known_frequencies.proposed.json` (merged classes) to `known_frequencies.json`.
-4. Delete `classidyne_db/` and re-embed (`POST /api/start-embedding`).
-5. For Kaggle, the screenshots are about 3 MB each (11 GB total). Either:
-   - publish the full-resolution PNGs; or
-   - add a downscaled copy (e.g. 1024 px wide, which is still above the 224 px model input).
-
-   Include the manifest so users can make **group-held-out** splits; publish `tmp/train/splits.csv` as the reference split.
-6. Restore your SDR++ settings from `tmp/backups/sdrpp/` (quit SDR++ first).
+1. Review the classes visually: `python dataset_tools/eval/contact.py out.png <class> --n 12`.
+2. Move the old waterfall folder aside (`tmp/backups/datasets_v2/waterfall`) and put the new one at `datasets/waterfall`. `datasets/fft` is untouched.
+3. Update `known_frequencies.json` for renamed / merged / new classes (`merge_classes.py` writes a proposal).
+4. Train, then copy `tmp/dataset/models/RadioNet_<tag>.pth` over `RadioNet/RadioNet.pth` (Git LFS). The checkpoint carries `arch` and `preprocess`, so `app.py` needs no code change for EfficientNet-B0.
+5. `rm -rf classidyne_db` (or move it aside), start `python app.py`, `POST /api/start-embedding`.
+6. Run `python -m pytest tests/` and `python dataset_tools/eval/app_eval.py` against the running server.
+7. For Kaggle, the screenshots are about 3 MB each (~12 GB total). Either publish the full-resolution PNGs or add a downscaled copy (e.g. 1024 px wide, still far above the 224 px model input). Include `manifest.csv` and `splits.csv` so others use **group-held-out** splits.
+8. Restore your SDR++ settings from `tmp/backups/sdrpp/` (quit SDR++ first).

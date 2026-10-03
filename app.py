@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 import io
+from concurrent.futures import ThreadPoolExecutor
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import logging
@@ -63,36 +64,54 @@ class RadioNetExtractor:
         else:
             self.device = torch.device("cpu")
 
+        model_path = os.environ.get("CLASSIDYNE_MODEL", "./RadioNet/RadioNet.pth")
+        checkpoint = torch.load(model_path, map_location=self.device)
+        # RadioNet v3 checkpoints record their architecture and preprocessing; older ones are ResNet-34
+        # with the timm centre-crop transform.
+        self.arch = checkpoint.get("arch", "resnet34")
+        self.full_frame = checkpoint.get("preprocess") == "full"
+        self.input_size = tuple(checkpoint.get("input_size", (224, 224)))  # (width, height)
+
         self.model = timm.create_model(
-            "resnet34",
+            self.arch,
             pretrained=False,
             num_classes=0,      # Removes classification head cleanly — no manual fc deletion needed
             global_pool="avg"
         )
 
-        checkpoint = torch.load("./RadioNet/RadioNet.pth", map_location=self.device)
         state_dict = checkpoint["model_state_dict"]
         # Drop any leftover fc/classifier keys defensively
-        state_dict = {k: v for k, v in state_dict.items() if "fc" not in k}
-        self.model.load_state_dict(state_dict, strict=False)
+        state_dict = {k: v for k, v in state_dict.items() if not k.startswith(("fc.", "classifier.", "head."))}
+        self.model.load_state_dict(state_dict, strict=not self.full_frame)
 
         self.model.eval()
         self.model = self.model.to(self.device)
-        logger.info(f"Model is running on: {self.device}")
+        logger.info(f"Model {self.arch} ({'x'.join(map(str, self.input_size)) if self.full_frame else 'centre crop'}) "
+                    f"is running on: {self.device}")
 
-        config = resolve_data_config({}, model="resnet34")
-        transforms = create_transform(**config)
-        if isinstance(transforms, tuple):
-            self.preprocess = tv_transforms.Compose(list(transforms))
+        if self.full_frame:
+            # FIX: resize + centre-crop discarded ~60% of a wide waterfall's span. Squash the whole image to the
+            # checkpoint's input size exactly as training did (640px LANCZOS thumbnail, then bicubic resize).
+            self.preprocess = tv_transforms.Compose([
+                tv_transforms.ToTensor(),
+                tv_transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+            ])
         else:
-            self.preprocess = transforms
+            config = resolve_data_config({}, model=self.arch)
+            transforms = create_transform(**config)
+            if isinstance(transforms, tuple):
+                self.preprocess = tv_transforms.Compose(list(transforms))
+            else:
+                self.preprocess = transforms
 
     def __call__(self, image):
         if isinstance(image, str):
-            input_image = Image.open(image).convert("L").convert("RGB")
-        else:
-            input_image = image.convert("L").convert("RGB")
-        input_image = self.preprocess(input_image)
+            image = Image.open(image)
+        input_image = image.convert("L")
+        if self.full_frame:
+            input_image.thumbnail((640, 640), Image.LANCZOS)
+            input_image = input_image.resize(self.input_size, Image.BICUBIC)
+        input_image = self.preprocess(input_image.convert("RGB"))
         if not isinstance(input_image, torch.Tensor):
             input_image = tv_transforms.ToTensor()(input_image)
         input_tensor = input_image.unsqueeze(0).to(self.device)
@@ -142,6 +161,18 @@ class GenericResponse(BaseModel):
 
 
 # ----------------- Utility Functions -----------------
+
+TILE_POOL = ThreadPoolExecutor(max_workers=8)
+
+
+def _collage_tile(filepath: str) -> Optional[Image.Image]:
+    """150x150 collage tile, or None if the dataset file is gone."""
+    try:
+        with Image.open(filepath) as img:
+            return img.convert("RGB").resize((150, 150))
+    except FileNotFoundError:
+        return None
+
 
 def image_to_base64(img: Image.Image) -> str:
     buf = io.BytesIO()
@@ -441,14 +472,18 @@ def classify(
         class_counts = Counter()
         idx = 0
 
-        for meta, distance in zip(metadatas, distances):
+        # FIX: decoding 20 full-resolution waterfall PNGs one by one took ~1.4 s; decode them in parallel
+        tiles = list(TILE_POOL.map(_collage_tile, [meta["filepath"] for meta in metadatas]))
+
+        for meta, distance, img in zip(metadatas, distances, tiles):
             # ChromaDB returns cosine distance; convert to similarity score
             similarity_score = 1.0 - distance
             filepath = meta["filepath"]
             signal_class = meta["class"]
 
             try:
-                img = Image.open(filepath).resize((150, 150))
+                if img is None:
+                    raise FileNotFoundError(filepath)
                 if similarity_score >= similarity_threshold and idx < 20:
                     class_counts[signal_class] += 1
                     x = idx % 5
