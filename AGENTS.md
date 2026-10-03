@@ -9,6 +9,7 @@ Classidyne classifies RF signal images (waterfall and FFT) by embedding them wit
 - **Backend test:** `python -m pytest tests/ -v` inside an activated venv (`pip install pytest`; not in requirements) — tests hit the **running** server (default port 5000; override with `CLASSIDYNE_PORT`). Standalone: `python tests/test_api.py --host localhost --port 5000`
 - **App evaluation:** `python dataset_tools/eval/app_eval.py --port 5001` — held-out accuracy through the live vector DB, colormap robustness, HTTP latency (writes `docs/APP_EVALUATION.md`)
 - **Train / evaluate RadioNet:** see `dataset_tools/README.md` and `docs/DATASET_GUIDE.md` §13
+- **Dataset tools setup:** `pip install -r dataset_tools/requirements.txt` (scipy, pyserial, torchvision, pytest) on top of `requirements.txt`
 - **Frontend setup:** `cd frontend && npm ci`
 - **Frontend dev:** `cd frontend && npm start`
 - **Frontend build:** `cd frontend && npm run build` — output goes to `frontend/build`, NOT `static/` (sync manually: copy `frontend/build/*` into `static/`)
@@ -49,6 +50,8 @@ Classidyne classifies RF signal images (waterfall and FFT) by embedding them wit
 - **Static serving:** `app.py` mounts `static/` at `/` last (after API routes). Frontend changes do not appear until built and copied into `static/`.
 
 ## Key Conventions
+
+- **Never commit.** The maintainer commits manually. When work is done, suggest a commit message and a `git add` command instead.
 
 - All API responses use `{"success": bool, "message": str, ...}`, even on errors with HTTP status codes (400 bad input, 404 not found, 409 ambiguous, 500 failure). Preserve this.
 - Endpoints taking `collection` must validate against `VALID_COLLECTIONS` (guards invalid queries and path traversal).

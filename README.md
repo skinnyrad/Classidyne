@@ -137,7 +137,7 @@ python app.py
 
 3. **Unknown Signals:**
 
-   - If you're unsure of the signal type, place the image in `datasets/img-type/unknown/`.
+   - Only add images whose signal type you know. Dataset v3 has no `unknown` class: an unlabeled folder becomes a "class" that every uncertain query votes for.
 
 4. **Upload Images:**
 
