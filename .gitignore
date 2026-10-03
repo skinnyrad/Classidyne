@@ -169,9 +169,5 @@ classidyne_db/
 datasets/
 
 # Dataset v3 scratch (large / machine-specific)
-tmp/iq/
-tmp/backups/
-tmp/_*/
-tmp/train/cache/
-tmp/train/models/
-tmp/eval/emb_cache/
+tmp/
+
