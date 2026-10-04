@@ -8,7 +8,8 @@ Scripts that build, curate and evaluate the Classidyne waterfall dataset and tra
 |---|---|
 | `paths.py` | Shared locations. Image paths in the manifest are relative to the repo root (`datasets/waterfall/<class>/<sha256>.png`). |
 | `manifest.csv` | One row per image: class, source (`synthetic` / `real-old` / `real-ota`), capture group, radio + SDR++ settings, colormap, generator parameters |
-| `splits.csv` | Group-held-out train / val / test split used for training and every evaluation |
+| `splits.csv`, `splits_random.csv` | Internal evaluation splits: group-held-out (whole capture groups) and per-image random. The published dataset has no split |
+| `fft_manifest.csv` | The SDR++ spectrum-plot images in `datasets/fft/` (one per class) |
 | `gen/` | NumPy signal generators (`signals.py`), DSP helpers, offline previews, SDR++ colormap LUTs (`colormaps.py`) |
 | `capture/` | HackRF TX -> RTL-SDR -> SDR++ screenshot pipeline (`run_capture.py`, `run_full.py`), live receive-only captures (`run_live.py`), SDR++ control |
 | `curate/` | Legacy import, class merges, balancing, live-frame occupancy check |
@@ -25,7 +26,8 @@ Common commands (repo root, `venv-classidyne` active):
 ```bash
 python dataset_tools/capture/run_full.py --target 150                        # balanced bench capture
 python dataset_tools/capture/run_full.py --colormap random --hires --target 20 # hi-res captures in other colormaps
-python dataset_tools/train/train.py --arch efficientnet_b0 --supcon 0.5 --cmap-aug 0.5 --resplit --tag final
-python dataset_tools/train/evaluate.py --v3 tmp/dataset/models/RadioNet_final_with_head.pth --modes full --cmap-shift
+python dataset_tools/train/train.py --split random --arch efficientnet_b0 --supcon 0.5 --cmap-aug 0.5 --input-size 448x224 --tag eval
+python dataset_tools/train/evaluate.py --split random --v3 tmp/dataset/models/RadioNet_eval_with_head.pth --modes full --cmap-shift
+python dataset_tools/train/train.py --all-data --arch efficientnet_b0 --supcon 0.5 --cmap-aug 0.5 --input-size 448x224 --tag release
 python dataset_tools/eval/app_eval.py                                          # after embedding, server running
 ```

@@ -63,7 +63,7 @@ def apply_profile(p: dict) -> None:
             "min": float(p.get("min_db", -100)),
             "max": float(p.get("max_db", -20)),
             "showMenu": False,
-            "showWaterfall": True,
+            "showWaterfall": p.get("show_waterfall", True),
             "fftHeight": int(p.get("fft_height", 250)),
             "fftHold": False,
             "fftSmoothing": False,
@@ -164,6 +164,27 @@ def grab(path: Path) -> Image.Image:
     wid = window()[0]
     subprocess.run(["screencapture", "-x", "-o", "-l", str(wid), str(path)], check=True)
     return Image.open(path).convert("RGB")
+
+
+def find_fft_panel(img: Image.Image) -> tuple[int, int, int, int]:
+    """Spectrum plot (dB axis + plot + frequency labels) in a window with the waterfall hidden. The plot sits in a
+    rectangle drawn with a thin light-grey border; find the outermost border lines (rows/columns that are mostly
+    that grey; grid lines also qualify but sit inside) and return the inside (left, top, right, bottom).
+    Works for any window size."""
+    a = np.asarray(img.convert("RGB")).astype(np.int16)
+    s = a.sum(2)
+    grey = (s >= 60) & (s <= 200) & (a.max(2) - a.min(2) < 12)
+
+    def lines(frac, axis):
+        return np.where(grey.mean(axis) > frac)[0]
+    rows, cols = lines(0.8, 1), lines(0.6, 0)
+    k = 0
+    while k < len(rows) and rows[k] == k:  # skip the window's title bar (a solid grey run from row 0)
+        k += 1
+    rows = rows[k:]
+    if len(rows) < 2 or len(cols) < 2:
+        raise RuntimeError("FFT panel border not found")
+    return int(cols[0]) + 2, int(rows[0]) + 2, int(cols[-1]) - 1, int(rows[-1]) - 1
 
 
 def find_waterfall(img: Image.Image) -> tuple[int, int, int, int]:

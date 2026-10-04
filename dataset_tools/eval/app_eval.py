@@ -8,6 +8,10 @@
 3. external images  - test_images/ and tests/lora.png (not part of the dataset)
 4. HTTP             - a sample of queries sent to the running server: success, latency, agreement with (1)
 
+Parts 1-2 are only meaningful for a model that did not train on the test split. The released RadioNet is trained on
+all the data, so evaluate the recipe with its split-trained checkpoint (same for the server in part 4):
+    CLASSIDYNE_MODEL=tmp/dataset/models/RadioNet_v3_final_448.pth  (and rebuild classidyne_db with it)
+
 usage (repo root, embedded DB; the server is only needed for part 4):
     python dataset_tools/eval/app_eval.py [--port 5000] [--http-n 40] [--out docs/APP_EVALUATION.md]
 """
@@ -97,7 +101,8 @@ def main():
     acc, f1, rec = metrics(y, p)
     conf, right = np.array(conf), np.array(y, object) == np.array(p, object)
     lines = ["# Classidyne app evaluation", "",
-             f"Model: `{app.EXTRACTOR.arch}`, preprocessing: {'whole frame ' + 'x'.join(map(str, app.EXTRACTOR.input_size)) if app.EXTRACTOR.full_frame else 'resize + centre crop'}. "
+             f"Model file: `{os.environ.get('CLASSIDYNE_MODEL', 'RadioNet/RadioNet.pth')}`. "
+             f"Architecture: `{app.EXTRACTOR.arch}`, preprocessing: {'whole frame ' + 'x'.join(map(str, app.EXTRACTOR.input_size)) if app.EXTRACTOR.full_frame else 'resize + centre crop'}. "
              f"Waterfall collection: {len(emb)} images. Voting exactly as `/api/classify` "
              f"(top-{K}, similarity >= {THRESHOLD}).", "",
              "## 1. Held-out test images against the live vector DB (own capture group excluded)", "",

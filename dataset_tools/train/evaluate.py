@@ -89,10 +89,11 @@ def main():
                     help="checkpoints trained on synthetic only: kNN gallery = all synthetic, queries = all real images")
     ap.add_argument("--cmap-shift", action="store_true", help="re-render Classic test images in every SDR++ colormap")
     ap.add_argument("--modes", nargs="*", default=["app", "full"])
+    ap.add_argument("--split", default="group", choices=["group", "random"])
     ap.add_argument("--no-current", action="store_true", help="skip the RadioNet v2 baseline")
     a = ap.parse_args()
     HERE.mkdir(parents=True, exist_ok=True)
-    rows = load_splits()
+    rows = load_splits(a.split)
     gal = [r for r in rows if r["split"] != "test"]
     qry = [r for r in rows if r["split"] == "test"]
     gal_y, q_y = np.array([r["class"] for r in gal]), np.array([r["class"] for r in qry])
@@ -114,7 +115,7 @@ def main():
         models[Path(path).stem.replace("_with_head", "")] = (lambda m: (lambda x: m(x)))(net)
         sizes[Path(path).stem.replace("_with_head", "")] = tuple(ck.get("input_size", (224, 224)))
 
-    lines = ["# RadioNet evaluation (group-held-out test split)", "",
+    lines = [f"# RadioNet evaluation ({'per-image random' if a.split == 'random' else 'group-held-out'} test split)", "",
              f"gallery (train+val): {len(gal)} images, test queries: {len(qry)} images, {len(classes)} classes", "",
              "| model | preprocessing | method | accuracy | macro-F1 |", "|---|---|---|---|---|"]
     per_class = {}

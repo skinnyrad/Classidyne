@@ -13,7 +13,7 @@ import torch
 from PIL import Image
 
 sys.path[:0] = [str(Path(__file__).resolve().parents[1]), str(Path(__file__).resolve().parents[1] / "gen")]
-from paths import MANIFEST, ROOT, SCRATCH, SPLITS  # noqa: E402
+from paths import MANIFEST, ROOT, SCRATCH, SPLITS, SPLITS_RANDOM  # noqa: E402
 
 REPO = TMP = ROOT  # manifest paths are relative to the repo root
 CACHE = SCRATCH / "train_cache"
@@ -76,8 +76,37 @@ def make_splits(seed=0, val=0.15, test=0.15, extend=False) -> list[dict]:
     return out
 
 
-def load_splits() -> list[dict]:
-    return list(csv.DictReader(open(SPLITS)))
+def make_random_splits(seed=0, val=0.15, test=0.15) -> list[dict]:
+    """Per-image random split, stratified by class (the common Kaggle-style split). Frames of one capture group
+    can land on both sides, so scores measure performance on data like the training captures."""
+    rows = list(csv.DictReader(open(MANIFEST)))
+    rng = np.random.default_rng(seed)
+    out = []
+    for cls in sorted({r["class"] for r in rows}):
+        rs = [r for r in rows if r["class"] == cls]
+        order = rng.permutation(len(rs))
+        n_test, n_val = round(test * len(rs)), round(val * len(rs))
+        for k, i in enumerate(order):
+            r = rs[i]
+            split = "test" if k < n_test else "val" if k < n_test + n_val else "train"
+            out.append({"file": r["file"], "class": cls, "source": r["source"], "group_id": r["group_id"],
+                        "split": split, "subtype": json.loads(r["params"] or "{}").get("subtype", ""),
+                        "colormap": colormap_of(r)})
+    with open(SPLITS_RANDOM, "w", newline="") as f:
+        w = csv.DictWriter(f, out[0].keys())
+        w.writeheader()
+        w.writerows(out)
+    return out
+
+
+def load_splits(kind: str = "group") -> list[dict]:
+    return list(csv.DictReader(open(SPLITS_RANDOM if kind == "random" else SPLITS)))
+
+
+def all_rows() -> list[dict]:
+    """Every manifest image, for training the release model on all the data."""
+    return [{"file": r["file"], "class": r["class"], "source": r["source"], "group_id": r["group_id"],
+             "split": "train", "colormap": colormap_of(r)} for r in csv.DictReader(open(MANIFEST))]
 
 
 # ----------------------------------------------------------------------------- image cache

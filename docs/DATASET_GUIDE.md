@@ -377,6 +377,18 @@ Two complementary fixes:
 
 2. **Colormap round-trip augmentation** at training time (`dataset_tools/gen/colormaps.py`, `train.py --cmap-aug`). SDR++ interpolates each map's colour stops linearly, so a 256-entry LUT reproduces it exactly. Every SDR++-rendered image is inverted to its colormap index ("signal level") and re-coloured with a random SDR++ map before the usual grayscale step. The LUTs are read from `/Applications/SDR++.app/Contents/Resources/colormaps/` (override with `SDRPP_COLORMAPS`).
 
+### 9.5 FFT-view images
+
+`--fft-only` (both `run_capture.py` and `run_live.py`) verifies the signal on the waterfall as usual, then, with the transmitter still running, relaunches SDR++ with the waterfall hidden (`showWaterfall: false`) and saves the spectrum plot to `datasets/fft/<class>/` (logged in `dataset_tools/fft_manifest.csv`):
+
+- `sdrpp_ctl.find_fft_panel()` crops to the plot's thin grey border: dB scale, trace and frequency labels only, at any window size.
+- One FFT frame is an instant, so bursty signals are often off. `grab_fft()` re-grabs up to 30 times until the trace rises clearly above its median (`fft_score()` ≥ 0.25 of the plot height; noise-only frames score 0.13–0.19).
+
+```bash
+caffeinate -dimsu python dataset_tools/capture/run_capture.py fm lora --sessions 1 --variants 1 --frames 1 --fft-only
+caffeinate -dimsu python dataset_tools/capture/run_live.py wifi-esp32 --frames 1 --per-center 1 --fft-only
+```
+
 ---
 
 ## 10. Live captures
@@ -486,6 +498,8 @@ All code is in `dataset_tools/train/`.
 
 `make_splits()` assigns whole **capture groups** to train, val or test (about 70/15/15 per class). Frames of one transmission, one legacy screenshot session or one live centre frequency are never on both sides. This is the most important difference from the v2 notebooks, whose random per-image splits put near-identical frames in both train and test.
 
+`--split random` uses a per-image split instead (`make_random_splits()`, stratified by class, 70/15/15, saved as `dataset_tools/splits_random.csv`): the common Kaggle-style split, where frames of one capture can land on both sides. On v3 it reads about 0.02 macro-F1 higher than the group split (§13.4). Both split files are internal evaluation tools; the published dataset has no predefined split.
+
 `--extend-split` keeps the assignment of every group already in `splits.csv` and only places new groups. Use it when adding data, so a model trained on the old split can still be compared fairly on the new test set (none of its training images moves into test).
 
 ### 13.2 Preprocessing finding
@@ -537,6 +551,8 @@ Model selection, first 24-class round (571 held-out images, Classidyne kNN macro
 | EfficientNet-B0 + SupCon | 0.84 | 0.71 |
 | EfficientNet-B0 + SupCon + colormap augmentation | 0.85 | 0.86 |
 
+Random vs group-held-out split, same recipe (448×224): random 0.888 macro-F1 (612 test images) vs group 0.869 (630). With the random split 62% of test images had a sibling frame from the same capture in training; those scored 0.93, the others 0.82.
+
 Final (630 held-out images, after the colormap captures):
 
 | Model | kNN macro-F1 | Real captures in other colormaps | Colormap mean |
@@ -554,7 +570,18 @@ Lessons:
 - **Colormap augmentation is nearly free robustness**; real captures in other colormaps add more.
 - **Bench-only training transfers poorly to other tools' screenshots** (style gap), so keep mixing in real captures.
 
-### 13.5 Using a new model in Classidyne
+### 13.5 The release model: train on all the data
+
+The split-trained models above only estimate performance; the model shipped in `RadioNet/RadioNet.pth` is trained on **every** image with the same recipe:
+
+```bash
+python dataset_tools/train/train.py --all-data --arch efficientnet_b0 --supcon 0.5 --cmap-aug 0.5 \
+       --input-size 448x224 --tag v3_release_448
+```
+
+With nothing held out there is no validation score to pick an epoch, so it trains a fixed 25 epochs (the split runs plateau around epoch 20–24 and the OneCycle schedule ends at a low learning rate) and keeps the final epoch. Quote the split-trained scores as its expected performance.
+
+### 13.6 Using a new model in Classidyne
 
 1. Copy `tmp/dataset/models/RadioNet_<tag>.pth` over `RadioNet/RadioNet.pth` (Git LFS). The checkpoint stores `arch`, `preprocess` and `input_size`; `app.RadioNetExtractor` reads them, so no code change is needed. (`CLASSIDYNE_MODEL=<path>` tries a checkpoint without copying.)
 2. Delete `classidyne_db/` and re-embed (`POST /api/start-embedding`): embeddings from different models are not comparable.
@@ -588,6 +615,7 @@ Lessons:
 | Captures in GQRX / Inferno look almost black | Those maps start at black; weak signals stay dark | Expected look; frames whose re-rendered signal score is < 25 are archived (`tmp/dataset/_faint_colormap/`) |
 | `/api/classify` took ~1.5 s | Collage decoded 20 full-resolution PNGs serially | Parallel decode (`TILE_POOL`): ~0.36 s |
 | Port 5000 busy on macOS | AirPlay Receiver | The app picks 5001; set `CLASSIDYNE_PORT=5001` for tests |
+| Auto-level runs away (min_db ≈ −800), every frame "no visible signal (score 0)" | The RTL-SDR stopped streaming after many hours of restarts (opens fine, delivers 0 samples; `rtl_sdr -n 1024000 x.bin` writes 0 bytes) | Replug the dongle, directly into the Mac; purge `levels` below −200 dB from `calibration.json` |
 
 ---
 
@@ -636,8 +664,8 @@ The v3 merge was done like this (repeat it for a future version):
 1. Review the classes visually: `python dataset_tools/eval/contact.py out.png <class> --n 12`.
 2. Move the old waterfall folder aside (`tmp/backups/datasets_v2/waterfall`) and put the new one at `datasets/waterfall`. `datasets/fft` is untouched.
 3. Update `known_frequencies.json` for renamed / merged / new classes (`merge_classes.py` writes a proposal).
-4. Train, then copy `tmp/dataset/models/RadioNet_<tag>.pth` over `RadioNet/RadioNet.pth` (Git LFS). The checkpoint carries `arch` and `preprocess`, so `app.py` needs no code change for EfficientNet-B0.
+4. Evaluate the recipe with a split, train the release model on all the data (§13.5), then copy `tmp/dataset/models/RadioNet_<tag>.pth` over `RadioNet/RadioNet.pth` (Git LFS). The checkpoint carries `arch` and `preprocess`, so `app.py` needs no code change for EfficientNet-B0.
 5. `rm -rf classidyne_db` (or move it aside), start `python app.py`, `POST /api/start-embedding`.
 6. Run `python -m pytest tests/` and `python dataset_tools/eval/app_eval.py` against the running server.
-7. For Kaggle, the screenshots are about 3 MB each (~12 GB total). Either publish the full-resolution PNGs or add a downscaled copy (e.g. 1024 px wide, still far above the 224 px model input). Include `manifest.csv` and `splits.csv` so others use **group-held-out** splits.
+7. For Kaggle, publish the full dataset with no predefined split: `datasets/manifest.csv` (copy of `dataset_tools/manifest.csv`), `datasets/fft/<class>/` and `datasets/waterfall/<class>/`. Keep `fft/` even when it holds little: the app's FFT endpoints need the folder, and Kaggle / zip tools drop empty folders. The screenshots are about 3 MB each (~13 GB); a downscaled copy (e.g. 1024 px wide) is an option.
 8. Restore your SDR++ settings from `tmp/backups/sdrpp/` (quit SDR++ first).

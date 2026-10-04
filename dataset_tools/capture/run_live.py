@@ -82,7 +82,7 @@ def esp_cmd(mode, center):
 
 
 def run(target: str, frames: int, seed: int, min_score: float, per_center: int, colormap: str | None = None,
-        hires: bool = False):
+        hires: bool = False, fft_only: bool = False):
     cls, source, centers, spans, fft_rate, fft_sizes, mode = TARGETS[target]
     rng = np.random.default_rng(seed)
     got, passes = 0, 1
@@ -114,13 +114,18 @@ def run(target: str, frames: int, seed: int, min_score: float, per_center: int, 
                     if score < min_score:
                         print(f"[{target}] {center/1e6:.1f} MHz: weak (score {score:.0f}), next centre", flush=True)
                         break
-                    rel, h = rc.save_png(img, cls)
+                    rel = rc.grab_fft(p, cls, f"{target}-{got}") if fft_only else rc.save_png(img, cls)[0]
                     rc.log({"file": rel, "class": cls, "source": "real-ota", "group_id": f"{target}-{int(center)}",
                             "session": f"{target}-{seed}", "rtl_center_hz": int(center), "offset_hz": 0,
                             "span_hz": int(p["sample_rate"]), "decimation": 1, "fft_size": p["fft_size"],
                             "fft_rate": p["fft_rate"], "rtl_gain": p.get("gain") or p.get("lna"), "tx_gain": "",
                             "min_db": p["min_db"], "max_db": p["max_db"], "tx_fs": "", "colormap": rc.CMAP["name"],
-                            "params": json.dumps({"device": source, "esp32": mode, "vga": p.get("vga")})})
+                            "params": json.dumps({"device": source, "esp32": mode, "vga": p.get("vga")})},
+                           rc.FFT_MANIFEST if fft_only else rc.MANIFEST)
+                    if fft_only:
+                        print(f"[{target}] FFT view saved: {rel}", flush=True)
+                        got = frames  # one spectrum image per run
+                        break
                     got += 1
                     print(f"[{target}] {center/1e6:.1f} MHz span={p['sample_rate']/1e6:.1f}M "
                           f"rate={p['fft_rate']} score={score:.0f} ({got}/{frames})", flush=True)
@@ -158,8 +163,9 @@ if __name__ == "__main__":
     ap.add_argument("--scan")
     ap.add_argument("--colormap", help='SDR++ colormap name, or "random" (any but Classic, per centre)')
     ap.add_argument("--hires", action="store_true")
+    ap.add_argument("--fft-only", action="store_true", help="save one spectrum-plot (FFT view) image to datasets/fft/")
     a = ap.parse_args()
     if a.scan:
         scan(a.scan)
     for t in a.targets:
-        run(t, a.frames, a.seed, a.min_score, a.per_center, colormap=a.colormap, hires=a.hires)
+        run(t, a.frames, a.seed, a.min_score, a.per_center, colormap=a.colormap, hires=a.hires, fft_only=a.fft_only)

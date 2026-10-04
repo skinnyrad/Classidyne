@@ -21,8 +21,8 @@ import torchvision.transforms.functional as TF
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 
-from common import (MEAN, MODELS, OLD_CKPT, SPLITS, STD, RadioNetV3, cached_gray, cached_level, colormap_of, device,
-                    load_splits, make_splits, tensorize)
+from common import (MEAN, MODELS, OLD_CKPT, SPLITS, SPLITS_RANDOM, STD, RadioNetV3, all_rows, cached_gray, cached_level,
+                    colormap_of, device, load_splits, make_random_splits, make_splits, tensorize)
 from colormaps import gray_as, luts  # noqa: E402  (on the path via common)
 
 OUT = MODELS
@@ -109,6 +109,10 @@ def main():
     ap.add_argument("--resplit", action="store_true")
     ap.add_argument("--extend-split", action="store_true",
                     help="keep existing group assignments, assign only groups new to the manifest")
+    ap.add_argument("--split", default="group", choices=["group", "random"],
+                    help="group = capture-group-held-out (splits.csv); random = per-image (splits_random.csv)")
+    ap.add_argument("--all-data", action="store_true",
+                    help="release model: train on every image, no validation; saves the final epoch")
     ap.add_argument("--tag", default="v3")
     ap.add_argument("--init", default="imagenet", choices=["imagenet", "radionet", "scratch"])
     ap.add_argument("--arch", default="resnet34")
@@ -122,8 +126,13 @@ def main():
                     help="synthetic = train on bench captures only (domain-shift experiment)")
     a = ap.parse_args()
     size = tuple(int(v) for v in a.input_size.lower().split("x"))
-    rows = (make_splits(extend=a.extend_split) if a.resplit or a.extend_split or not SPLITS.exists()
-            else load_splits())
+    if a.all_data:
+        rows = all_rows()
+    elif a.split == "random":
+        rows = make_random_splits() if a.resplit or not SPLITS_RANDOM.exists() else load_splits("random")
+    else:
+        rows = (make_splits(extend=a.extend_split) if a.resplit or a.extend_split or not SPLITS.exists()
+                else load_splits())
     classes = sorted({r["class"] for r in rows})
     tr = [r for r in rows if r["split"] == "train"]
     va = [r for r in rows if r["split"] == "val"]
@@ -137,7 +146,7 @@ def main():
     dl_tr = DataLoader(WaterfallDS(tr, classes, True, a.mode, a.cmap_aug, size), batch_size=a.bs,
                        sampler=WeightedRandomSampler(weights, len(tr), replacement=True), num_workers=4,
                        persistent_workers=True)
-    dl_va = DataLoader(WaterfallDS(va, classes, False, a.mode, size=size), batch_size=64, num_workers=2)
+    dl_va = DataLoader(WaterfallDS(va, classes, False, a.mode, size=size), batch_size=64, num_workers=2) if va else None
     dev = device()
     torch.manual_seed(a.seed)
     np.random.seed(a.seed)
@@ -166,9 +175,14 @@ def main():
             sched.step()
             tot += loss.item() * len(y)
             n += len(y)
-        acc, f1 = evaluate(model, dl_va, dev, len(classes))
-        log.append({"epoch": ep, "loss": tot / n, "val_acc": acc, "val_macro_f1": f1})
-        print(f"ep {ep:2d} loss {tot / n:.3f} val acc {acc:.3f} macroF1 {f1:.3f} ({time.time() - t0:.0f}s)", flush=True)
+        if a.all_data:  # nothing held out: keep the last epoch (the schedule ends at a low learning rate)
+            acc, f1 = float("nan"), float(ep)
+            print(f"ep {ep:2d} loss {tot / n:.3f} ({time.time() - t0:.0f}s)", flush=True)
+        else:
+            acc, f1 = evaluate(model, dl_va, dev, len(classes))
+            print(f"ep {ep:2d} loss {tot / n:.3f} val acc {acc:.3f} macroF1 {f1:.3f} ({time.time() - t0:.0f}s)",
+                  flush=True)
+        log.append({"epoch": ep, "loss": tot / n, "val_acc": acc, "val_macro_f1": None if a.all_data else f1})
         if f1 > best:
             best = f1
             torch.save({"model_state_dict": model.backbone.state_dict(), "arch": a.arch, "preprocess": a.mode, "input_size": list(size),
@@ -177,10 +191,12 @@ def main():
                         "arch": a.arch, "init": a.init, "supcon": a.supcon, "cmap_aug": a.cmap_aug,
                         "input_size": list(size)},
                        OUT / f"RadioNet_{a.tag}_with_head.pth")
-    (OUT / f"train_{a.tag}.json").write_text(json.dumps({"best_val_macro_f1": best, "classes": classes,
+    (OUT / f"train_{a.tag}.json").write_text(json.dumps({"best_val_macro_f1": None if a.all_data else best, "classes": classes,
                                                           "mode": a.mode, "init": a.init, "arch": a.arch,
-                                                          "supcon": a.supcon, "log": log}, indent=2))
-    print("best val macro-F1", best)
+                                                          "supcon": a.supcon, "cmap_aug": a.cmap_aug,
+                                                          "input_size": list(size), "split": "all" if a.all_data
+                                                          else a.split, "epochs": a.epochs, "log": log}, indent=2))
+    print("saved final epoch (all data)" if a.all_data else f"best val macro-F1 {best}")
 
 
 if __name__ == "__main__":

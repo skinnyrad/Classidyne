@@ -40,15 +40,26 @@ Developer write-up for the rebuilt **waterfall-only** dataset (v3) and RadioNet 
 **Known gaps / v3.5 plans:**
 - **Bring back drone-video, uav-video, hdmi and atsc** once there is enough live data. The analog 5.8 GHz FPV classes need a real transmitter.
 - **Off-air airband / AIS / ADS-B / pager / VOR:** covered by bench and legacy images; the indoor antenna captured no usable off-air examples. An outdoor antenna would add them.
-- The local `datasets/fft` folder has a single image; FFT views are not part of v3.
+- **FFT views** are a placeholder: one SDR++ spectrum-plot image per class in `datasets/fft/<class>/` (listed in `dataset_tools/fft_manifest.csv`), so the app's FFT side and folder layout work. A real FFT dataset is future work.
 
 ## RadioNet v3
 
-**EfficientNet-B0, ImageNet start, cross-entropy + SupCon (0.5), colormap round-trip augmentation (0.5), whole-frame 448×224 input** (`RadioNet/RadioNet.pth`, 1280-d embeddings). The checkpoint stores `arch`, `preprocess` and `input_size`, which `app.py` reads.
+**EfficientNet-B0, ImageNet start, cross-entropy + SupCon (0.5), colormap round-trip augmentation (0.5), whole-frame 448×224 input** (1280-d embeddings). The checkpoint stores `arch`, `preprocess` and `input_size`, which `app.py` reads.
 
-### Results (group-held-out test split, 630 images)
+**The released `RadioNet/RadioNet.pth` is trained on all 4,051 images** (25 epochs, final epoch kept; `train.py --all-data`). Because it has seen every image it cannot be scored on held-out data; the numbers below come from the **same recipe** trained on a split, and are the estimate of how the released model performs on new captures.
 
-Test images come from **capture groups never seen in training**: no frame of the same transmission or legacy session is in both train and test. "kNN" is exactly how Classidyne classifies (top-20 cosine vote).
+### Results
+
+Two ways of holding data out, same recipe, Classidyne kNN (top-20 cosine vote, what `/api/classify` does):
+
+| Split | Test images | kNN acc / macro-F1 | Head macro-F1 | Real captures in other colormaps | Colormap shift, mean of 14 maps |
+|---|---|---|---|---|---|
+| **Random** (per image, stratified by class; `splits_random.csv`) | 612 | **0.887 / 0.888** | 0.880 | 0.68 | 0.89 |
+| **Group-held-out** (whole capture groups; `splits.csv`) | 630 | **0.867 / 0.869** | 0.852 | 0.64 | 0.84 |
+
+Random vs group: with a random split, 62% of test images have a sibling frame from the same capture in training. Those score 0.93; test images without one score 0.82. Overall the random split reads ~0.02 higher: v3 is deduplicated and capped per session, so near-duplicate leakage is small (unlike v2, whose random-split notebooks reported ~0.98 while the group-held-out score was 0.57). Both splits are internal evaluation files; the published dataset has no predefined split.
+
+Model comparison (group-held-out test split, 630 images):
 
 | Model | kNN acc / macro-F1 | Head acc / macro-F1 | Real captures in other colormaps (59), kNN F1 | Colormap shift, mean of 14 maps |
 |---|---|---|---|---|
@@ -56,31 +67,45 @@ Test images come from **capture groups never seen in training**: no frame of the
 | RadioNet v2, whole frame | 0.58 / 0.57 | — | 0.28 | 0.37 |
 | v3 round 1 (pre-colormap captures, 224×224) | 0.83 / 0.83 | 0.80 / 0.80 | 0.55 | 0.81 |
 | v3 final at 224×224 | 0.83 / 0.83 | 0.80 / 0.80 | 0.62 | 0.81 |
-| **v3 final, 448×224 (deployed)** | **0.87 / 0.87** | **0.85 / 0.85** | **0.64** | **0.84** |
+| **v3, 448×224 (the released recipe)** | **0.87 / 0.87** | **0.85 / 0.85** | **0.64** | **0.84** |
 | style-only baseline (size / aspect / colour) | 0.27 / 0.26 | | | |
 
-Through the live app and vector DB (`dataset_tools/eval/app_eval.py`): **0.868 accuracy / 0.873 macro-F1** on the held-out images, colormap-shift mean 0.84, `/api/classify` median latency ~0.38 s.
+Through the live app and vector DB with the split-trained model (`dataset_tools/eval/app_eval.py`, see [APP_EVALUATION.md](APP_EVALUATION.md)): **0.868 accuracy / 0.873 macro-F1** on the held-out images, colormap-shift mean 0.84, `/api/classify` median latency ~0.38 s.
 
 **Takeaways:**
 1. **Whole-frame preprocessing.** The v2 centre-crop discarded about 60% of a wide waterfall's span.
 2. **448×224 input matters for wide high-res views.** At 224 px a narrow signal in a 2.4 MHz span is 1–5 px wide: high-res frames whose signal fills < 3% of the span were only 37% correct (vs 93% for normal frames). Doubling the frequency resolution raised 2FSK from 0.31 to 0.73 recall, and RS41, VOR and APT by 0.1–0.2.
 3. **Colormaps matter even in grayscale.** Most SDR++ maps are not monotonic in brightness (Classic: strong signals turn *dark* in grayscale). Colormap round-trip augmentation lifted the mean over all 14 maps from 0.71 to 0.81–0.84 macro-F1, and the real colormap captures improved the model on genuine non-Classic screenshots (0.55 → 0.64).
 4. **EfficientNet-B0 + SupCon from ImageNet** beat ResNet-34 (ImageNet, SupCon or v2-RadioNet start) and training from scratch (see `DATASET_GUIDE.md` §13).
-5. **Still weakest:** SSTV (0.53, mostly confused with APT: both are slow narrow FM audio images), packet (0.65), 2FSK and AM (0.73), LoRa and DSD (0.77). Legacy `real-old` images score lowest (macro-F1 0.71) because each comes from a session the model never saw. Of the external test images, `tests/lora.png` is still classified correctly, but the grey LoRa screenshot `test_images/test1.png` (another tool, no SDR++ colormap) now lands on digital-speech-decoder; the round-1 224×224 model got it right. More non-SDR++ real captures would help here.
+5. **Still weakest:** SSTV (0.53, mostly confused with APT: both are slow narrow FM audio images), packet (0.65), 2FSK and AM (0.73), LoRa and DSD (0.77). Legacy `real-old` images score lowest (macro-F1 0.71) because each comes from a session the model never saw. More real captures from other tools (GQRX, SDR#, SDRangel) would help most. The released all-data model classifies all three external test images as expected (`tests/lora.png` and `test_images/test1.png` → lora).
 
-Reports (git-ignored, `tmp/dataset/reports/`): `report_final_448.md`, `report_final.md`, `report_r1.md`, `app_eval_r1.md`; training logs in `tmp/dataset/logs/`; models in `tmp/dataset/models/`.
+Reports (git-ignored, `tmp/dataset/reports/`): `report_random_448.md`, `report_final_448.md`, `report_final.md`, `report_r1.md`, `app_eval_r1.md`; training logs in `tmp/dataset/logs/`; models in `tmp/dataset/models/` (`RadioNet_v3_release_448.pth` = released, `RadioNet_v3_final_448.pth` / `RadioNet_v3_random_448.pth` = evaluated split-trained versions).
 
 ## Re-running
 
 ```bash
 source venv-classidyne/bin/activate
-python dataset_tools/train/train.py --arch efficientnet_b0 --supcon 0.5 --cmap-aug 0.5 --input-size 448x224 --tag v3_final_448
-python dataset_tools/train/evaluate.py --v3 tmp/dataset/models/RadioNet_v3_final_448_with_head.pth --modes full --cmap-shift
-cp tmp/dataset/models/RadioNet_v3_final_448.pth RadioNet/RadioNet.pth
+# 1. estimate performance with a split (random or group-held-out)
+python dataset_tools/train/train.py --split random --arch efficientnet_b0 --supcon 0.5 --cmap-aug 0.5 --input-size 448x224 --tag v3_random_448
+python dataset_tools/train/evaluate.py --split random --v3 tmp/dataset/models/RadioNet_v3_random_448_with_head.pth --modes full --cmap-shift
+# 2. train the release model on everything, with the same recipe
+python dataset_tools/train/train.py --all-data --arch efficientnet_b0 --supcon 0.5 --cmap-aug 0.5 --input-size 448x224 --tag v3_release_448
+cp tmp/dataset/models/RadioNet_v3_release_448.pth RadioNet/RadioNet.pth
 rm -rf classidyne_db && python app.py      # then POST /api/start-embedding
 python dataset_tools/eval/app_eval.py --port 5001
 ```
 
-Kaggle: about 13 GB of full-resolution PNGs. Publish `dataset_tools/manifest.csv` and `dataset_tools/splits.csv` with it so others use group-held-out splits.
+## Published dataset (Kaggle)
+
+The full dataset, with **no predefined train / val / test split**: users split it themselves. Layout (unzip into the repo root):
+
+```
+datasets/
+  manifest.csv          one row per waterfall image (class, source, group_id, radio / SDR++ settings, colormap, parameters)
+  fft/<class>/          one SDR++ spectrum-plot image per class
+  waterfall/<class>/    4,051 waterfall images, 24 classes
+```
+
+About 13 GB of full-resolution PNGs. `group_id` lets anyone who wants a leakage-free evaluation keep each capture group on one side of their split.
 
 Archived (not deleted) frames are in `tmp/dataset/_*/`: pilots, rejected live frames, faint colormap frames, balancing overflow, merged-class overflow. The v2 waterfall dataset, v2 `RadioNet.pth` and v2 vector DB are in `tmp/backups/`.

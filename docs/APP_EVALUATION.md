@@ -1,5 +1,7 @@
 # Classidyne app evaluation
 
+> Measured with the split-trained model `RadioNet_v3_final_448.pth` (same recipe as the released all-data `RadioNet/RadioNet.pth`, which has seen every image and so cannot be scored on held-out data). Regenerate with `dataset_tools/eval/app_eval.py`.
+
 Model: `efficientnet_b0`, preprocessing: whole frame 448x224. Waterfall collection: 4051 images. Voting exactly as `/api/classify` (top-20, similarity >= 0.5).
 
 ## 1. Held-out test images against the live vector DB (own capture group excluded)

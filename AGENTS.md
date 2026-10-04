@@ -20,7 +20,7 @@ Classidyne classifies RF signal images (waterfall and FFT) by embedding them wit
 ## Prerequisites
 
 - **Git LFS is mandatory.** `RadioNet/RadioNet.pth` is LFS-tracked. Without `git lfs pull`, backend import fails at module level before any request is served.
-- **Kaggle dataset** must be downloaded and unzipped into `datasets/` as `datasets/{waterfall,fft}/<signal-type>/<image>`. `datasets/` is gitignored. The waterfall side is dataset v3 (24 classes, see `docs/DATASET_V3.md`); `dataset_tools/manifest.csv` lists every v3 image. A fresh checkout cannot classify anything until embedding has run (`POST /api/start-embedding`, or the UI).
+- **Kaggle dataset** must be downloaded and unzipped into `datasets/` as `datasets/{waterfall,fft}/<signal-type>/<image>`. `datasets/` is gitignored. The waterfall side is dataset v3 (24 classes, see `docs/DATASET_V3.md`); `dataset_tools/manifest.csv` lists every v3 image. `datasets/fft/` holds one SDR++ spectrum-plot image per class (placeholder; the folder must exist for the FFT endpoints). `RadioNet/RadioNet.pth` is trained on all the data; its performance estimate comes from the same recipe trained on a split. A fresh checkout cannot classify anything until embedding has run (`POST /api/start-embedding`, or the UI).
 - `classidyne_db/` (Chroma persistence) is created on first import and is not checked in.
 
 ## Layout

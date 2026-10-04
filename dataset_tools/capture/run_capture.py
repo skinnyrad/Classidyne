@@ -32,6 +32,8 @@ import colormaps  # noqa: E402
 from profiles import PROFILES, pick  # noqa: E402
 
 OUT = DATA
+FFT_OUT = ROOT / "datasets" / "fft"
+FFT_MANIFEST = MANIFEST.parent / "fft_manifest.csv"
 IQ = SCRATCH / "iq"
 SHOTS = SCRATCH / "iq" / "_shots"
 CALIB = HERE / "calibration.json"
@@ -125,14 +127,22 @@ def grab_crop(tag: str) -> Image.Image:
     SHOTS.mkdir(parents=True, exist_ok=True)
     raw = SHOTS / f"{tag}.png"
     img = sdr.grab(raw)
-    raw.unlink(missing_ok=True)
     cal = json.loads(CALIB.read_text()) if CALIB.exists() else {}
     box = tuple(cal["box"]) if cal.get("box") and tuple(cal.get("window_px", ())) == img.size else None
     if box is None:
-        box = tuple(int(v) for v in sdr.find_waterfall(img))
+        for _ in range(6):
+            try:
+                box = tuple(int(v) for v in sdr.find_waterfall(img))
+                break
+            except IndexError:  # new window size and a still-empty waterfall: wait for it to fill
+                time.sleep(1.5)
+                img = sdr.grab(raw)
+        else:
+            raise RuntimeError("SDR++ waterfall not found in the window")
         if CALIB.exists():
             cal.update(box=box, window_px=img.size)
             CALIB.write_text(json.dumps(cal, indent=2))
+    raw.unlink(missing_ok=True)
     return img.crop(box)
 
 
@@ -147,9 +157,9 @@ def save_png(img: Image.Image, cls: str) -> tuple[str, str]:
     return str(dst.relative_to(ROOT)), h
 
 
-def log(row: dict):
-    new = not MANIFEST.exists()
-    with MANIFEST.open("a", newline="") as f:
+def log(row: dict, manifest: Path = MANIFEST):
+    new = not manifest.exists()
+    with manifest.open("a", newline="") as f:
         w = csv.DictWriter(f, FIELDS)
         if new:
             w.writeheader()
@@ -157,6 +167,52 @@ def log(row: dict):
 
 
 # ----------------------------------------------------------------------------- main loops
+
+def fft_score(plot: Image.Image) -> float:
+    """How far the spectrum trace's peak rises above its median level, as a fraction of the plot height
+    (noise-only frames score ~0.13-0.19, visible signals >= 0.25)."""
+    a = np.asarray(plot.convert("RGB")).astype(np.int16)
+    r, g, b = a[..., 0], a[..., 1], a[..., 2]
+    trace = (b > 110) & (g > 100) & (r < 170) & (b - r > 40)   # SDR++'s cyan trace / fill
+    h, w = trace.shape
+    cols = trace[:, int(w * 0.04):]                              # skip the dB labels
+    has = cols.any(0)
+    if has.sum() < 10:
+        return 0.0
+    tops = np.argmax(cols, 0)[has].astype(float)
+    return float((np.median(tops) - np.percentile(tops, 0.3)) / h)
+
+
+def grab_fft(prof_sdr: dict, cls: str, tag: str, min_score=0.25, tries=30) -> str:
+    """Re-open SDR++ on the same settings with the waterfall hidden (the transmitter keeps running) and save the
+    spectrum plot as datasets/fft/<cls>/<sha256>.png. Returns the repo-relative path."""
+    sdr.restart_with(dict(prof_sdr, show_waterfall=False))
+    time.sleep(3.0)
+    SHOTS.mkdir(parents=True, exist_ok=True)
+    raw = SHOTS / f"fft-{tag}.png"
+    # one FFT frame is an instant: bursty signals are often off. Re-grab until the trace clearly rises
+    plot, best = None, -1.0
+    for _ in range(tries):
+        img = sdr.grab(raw)
+        cand = img.crop(sdr.find_fft_panel(img))
+        sc = fft_score(cand)
+        if sc > best:
+            plot, best = cand, sc
+        if sc >= min_score:
+            break
+        time.sleep(0.2)
+    raw.unlink(missing_ok=True)
+    print(f"  FFT view score {best:.2f}", flush=True)
+    d = FFT_OUT / cls
+    d.mkdir(parents=True, exist_ok=True)
+    tmp = d / "_tmp.png"
+    plot.save(tmp, optimize=True)
+    dst = d / f"{hashlib.sha256(tmp.read_bytes()).hexdigest()}.png"
+    tmp.rename(dst)
+    sdr.restart_with(prof_sdr)  # back to the waterfall view
+    time.sleep(2.0)
+    return str(dst.relative_to(ROOT))
+
 
 def cal() -> dict:
     return json.loads(CALIB.read_text()) if CALIB.exists() else {}
@@ -307,10 +363,12 @@ def free_center(rng, obw: float) -> float:
 
 
 def run_class(label: str, sessions: int, variants: int, frames: int, seed: int, colormap: str | None = None,
-              hires: bool | None = None):
+              hires: bool | None = None, fft_only: bool = False):
     """``label`` is the dataset class; sessions draw a generator sub-type for it (e.g. morse -> OOK).
     colormap: SDR++ colormap name, "random" (any but Classic, drawn per session) or None (Classic).
-    hires: force (True) or forbid (False) the big-FFT / fast-waterfall look; None = profile default."""
+    hires: force (True) or forbid (False) the big-FFT / fast-waterfall look; None = profile default.
+    fft_only: verify the signal on the waterfall as usual, but save one spectrum-plot (FFT view) image per variant
+    to datasets/fft/ (logged in fft_manifest.csv) instead of waterfall frames."""
     forced = label if label in CLASS_OF else None  # e.g. "QPSK": capture that sub-type under its class
     label = CLASS_OF.get(label, label)
     rng = np.random.default_rng([seed, int(hashlib.md5(label.encode()).hexdigest()[:8], 16)])
@@ -390,13 +448,20 @@ def run_class(label: str, sessions: int, variants: int, frames: int, seed: int, 
                     if score < need - 10:
                         print(f"[{cls}] s{s} v{v} f{k} no visible signal (score {score:.0f}), skipped", flush=True)
                         continue
-                    rel, h = save_png(img, cls)
+                    if fft_only:
+                        rel = grab_fft(prof_sdr, cls, f"{session_id}-{v}")
+                    else:
+                        rel, h = save_png(img, cls)
                     log({"file": rel, "class": cls, "source": "synthetic", "group_id": f"{session_id}-{v}",
                          "session": session_id, "rtl_center_hz": int(center), "offset_hz": int(offset),
                          "span_hz": int(span), "decimation": prof["decimation"], "fft_size": prof["fft_size"],
                          "fft_rate": prof["fft_rate"], "rtl_gain": prof["rtl_gain"], "tx_gain": gain,
                          "min_db": prof["min_db"], "max_db": prof["max_db"], "tx_fs": int(tx_fs),
-                         "colormap": CMAP["name"], "params": json.dumps(meta)})
+                         "colormap": "" if fft_only else CMAP["name"], "params": json.dumps(meta)},
+                        FFT_MANIFEST if fft_only else MANIFEST)
+                    if fft_only:
+                        print(f"[{cls}] FFT view saved: {rel}", flush=True)
+                        break
                     print(f"[{cls}] s{s} v{v} f{k} score={score:.0f} t_screen={t_screen:.1f}s gain={gain} {meta}", flush=True)
             finally:
                 tx.stop()
@@ -467,11 +532,13 @@ if __name__ == "__main__":
     ap.add_argument("--calibrate", action="store_true")
     ap.add_argument("--colormap", help='SDR++ colormap name, or "random" (any but Classic, per session)')
     ap.add_argument("--hires", action="store_true", help="every session uses the big-FFT / fast-waterfall look")
+    ap.add_argument("--fft-only", action="store_true", help="save spectrum-plot (FFT view) images to datasets/fft/")
     a = ap.parse_args()
     if a.calibrate:
         calibrate()
     for c in a.classes:
-        run_class(c, a.sessions, a.variants, a.frames, a.seed, colormap=a.colormap, hires=a.hires or None)
+        run_class(c, a.sessions, a.variants, a.frames, a.seed, colormap=a.colormap, hires=a.hires or None,
+                  fft_only=a.fft_only)
 
 
 def measure_scroll(fft_rate: int, fft_size: int, sample_rate: int = 2_400_000) -> float:
