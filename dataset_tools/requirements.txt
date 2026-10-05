@@ -1,0 +1,5 @@
+# Extra packages for dataset_tools/ (install on top of the repo's requirements.txt)
+scipy        # signal generation (oaconvolve, resample_poly)
+pyserial     # ESP32 traffic generator control (run_live.py)
+torchvision  # training transforms (also imported by app.py)
+pytest       # tests/ (API integration tests)

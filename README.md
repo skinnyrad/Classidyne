@@ -94,6 +94,10 @@ datasets/
         └── c17afe0fe5cc3cc1308605cf390ecbb5.png
 ```
 
+The waterfall images are **dataset v3**: 24 balanced signal classes captured in SDR++ (bench signals generated with NumPy and sent with a HackRF, live Wi-Fi / Bluetooth / cellular captures, and curated legacy images), in several SDR++ colormaps and resolutions. RadioNet v3 (EfficientNet-B0) was trained on it. See [docs/DATASET_V3.md](docs/DATASET_V3.md) for the classes and model results, [docs/APP_EVALUATION.md](docs/APP_EVALUATION.md) for how well the app classifies held-out images, and [docs/DATASET_GUIDE.md](docs/DATASET_GUIDE.md) for how to rebuild or extend the dataset with the scripts in `dataset_tools/`.
+
+> **Changing the model?** Classidyne stores embeddings in `classidyne_db/`. After replacing `RadioNet/RadioNet.pth`, delete `classidyne_db/` and re-embed the dataset.
+
 8. **Run the project:**
 
 ```sh
@@ -133,7 +137,7 @@ python app.py
 
 3. **Unknown Signals:**
 
-   - If you're unsure of the signal type, place the image in `datasets/img-type/unknown/`.
+   - Only add images whose signal type you know. Dataset v3 has no `unknown` class: an unlabeled folder becomes a "class" that every uncertain query votes for.
 
 4. **Upload Images:**
 
